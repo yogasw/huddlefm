@@ -1462,8 +1462,10 @@ const server = Bun.serve({
       });
     },
     "/favicon.ico": () => new Response(null, { status: 204 }),
-    "/mcp": (request: Request) =>
-      mcpResponse(request, {
+    "/mcp": (request: Request, server: import("bun").Server<unknown>) => {
+      // An add answers once its song is ready, which can take minutes.
+      server.timeout(request, 240);
+      return mcpResponse(request, {
         token: config.mcpToken,
         actorId: config.mcpUserId ?? [...config.adminUserIds][0],
         version: "1",
@@ -1492,7 +1494,8 @@ const server = Bun.serve({
           await joinHuddle(channel, userId, room.callId);
           return { ok: true, joined: true };
         },
-      }),
+      });
+    },
     "/join": {
       POST: async (request: Request) => {
         const denied = controlDenied(request, config.localControlToken);

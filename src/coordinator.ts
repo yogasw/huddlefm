@@ -231,6 +231,8 @@ type VideoRequest = {
 };
 
 type Entry = TrackMetadata & {
+  // Why the song could not be prepared, for an agent that added it.
+  preparationError?: string;
   id: string;
   requesterId: string;
   automatic?: boolean;
@@ -1720,9 +1722,14 @@ export class Coordinator {
         if (!remaining.length) {
           this.restoreQueuedAutoplay(committed.heldAutoplay);
           await this.render();
+          const reason = committed.pending
+            .map(({ entry }) => entry.preparationError)
+            .find(Boolean);
           return {
             ok: false as const,
-            error: "Could not prepare that track.",
+            error: reason
+              ? `Could not prepare that track: ${reason}`
+              : "Could not prepare that track.",
           };
         }
         await this.destroyQueuedAutoplay(committed.heldAutoplay);
@@ -3826,7 +3833,7 @@ export class Coordinator {
       const run = { userId, done: false };
       try {
         result = await this.integrationRuns.run(run, () =>
-          this.runIntegrationCommand(userId, command),
+          this.runIntegrationCommand(userId, command, { mcp: true }),
         );
       } finally {
         run.done = true;
@@ -3843,9 +3850,12 @@ export class Coordinator {
     return result;
   }
 
+  // An MCP caller is an agent that tells people what it did, so its add
+  // answers once the song is ready, or with why it could not be.
   private async runIntegrationCommand(
     userId: string,
     command: IntegrationCommand,
+    options: { mcp?: boolean } = {},
   ) {
     switch (command.type) {
       case "status":
@@ -3858,7 +3868,7 @@ export class Coordinator {
         if (!command.reference)
           return { ok: false as const, error: "reference is required." };
         return this.agentAdd(userId, command.reference, undefined, {
-          awaitPreparation: false,
+          awaitPreparation: Boolean(options.mcp),
         });
       case "remove":
         if (!command.trackId)
@@ -4727,6 +4737,7 @@ export class Coordinator {
         error,
         "Queued track preparation failed",
       );
+      entry.preparationError = message(error);
       await this.enqueue(async () => {
         if (!this.dropFailed(entry, error)) return;
         this.notifyTrack("queue.removed", entry, { reason: "failed" });

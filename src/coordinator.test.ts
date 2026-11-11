@@ -5460,7 +5460,7 @@ test("agentAdd reports failure when preparation removes the track", async () => 
   );
   expect(result).toMatchObject({
     ok: false,
-    error: "Could not prepare that track.",
+    error: "Could not prepare that track: private video",
   });
   expect(test.coordinator.agentStatus("host")).toMatchObject({
     ok: true,
