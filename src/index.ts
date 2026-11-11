@@ -798,7 +798,10 @@ async function joinHuddle(
       catalog,
       lyrics,
       audit,
-      config,
+      {
+        ...config,
+        huddleAccountId: config.huddleAccountListens ? undefined : botUserId,
+      },
       bootstrap.bridgeToken,
       (message) => void runtime?.media.send(message),
       async () => {
