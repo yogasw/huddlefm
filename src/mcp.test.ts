@@ -134,3 +134,23 @@ test("changes only the settings it is given, dropping unknown modes", async () =
   expect(ran[0]!.command.duckingMode).toBeUndefined();
   expect(ran[0]!.command.autoplayMode).toBeUndefined();
 });
+
+test("credits a song to who asked the agent for it", async () => {
+  ran.length = 0;
+  await call("add", {
+    channel: "C01ALLOWED",
+    thread_ts: "1.0",
+    reference: "ref",
+    requested_by: "U01TESTUSER",
+  });
+  await call("add", {
+    channel: "C01ALLOWED",
+    thread_ts: "1.0",
+    reference: "ref",
+    requested_by: "not a user",
+  });
+  expect(ran.map(({ command }) => command.requestedBy)).toEqual([
+    "U01TESTUSER",
+    undefined,
+  ]);
+});

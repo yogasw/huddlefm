@@ -117,6 +117,11 @@ export const mcpTools = [
     "add",
     {
       reference: { type: "string" },
+      requested_by: {
+        type: "string",
+        description:
+          "Slack user ID of who asked for the song, shown as who added it",
+      },
     },
     ["reference"],
   ),
@@ -251,6 +256,11 @@ async function call(
   };
   if (typeof args.query === "string") command.query = args.query;
   if (typeof args.reference === "string") command.reference = args.reference;
+  if (
+    typeof args.requested_by === "string" &&
+    /^[UW][A-Z0-9]+$/.test(args.requested_by)
+  )
+    command.requestedBy = args.requested_by;
   if (typeof args.percent === "number") command.percent = args.percent;
   for (const [key, kind] of Object.entries(sessionSettings)) {
     const value =

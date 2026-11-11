@@ -1560,7 +1560,12 @@ export class Coordinator {
     userId: string,
     reference: string,
     signal?: AbortSignal,
-    options: { awaitPreparation?: boolean; withVideoMode?: boolean } = {},
+    options: {
+      awaitPreparation?: boolean;
+      withVideoMode?: boolean;
+      // Who the songs are credited to, when not `userId`.
+      requesterId?: string;
+    } = {},
   ) {
     throwIfAborted(signal);
     if (!this.canUsePlayer(userId))
@@ -1630,11 +1635,12 @@ export class Coordinator {
           this.restoreQueuedAutoplay(heldAutoplay);
           return { error: fit.error };
         }
-        pending = this.stageEntries(userId, fit.items);
+        pending = this.stageEntries(options.requesterId ?? userId, fit.items);
         await this.render();
         this.queueChanged();
         throwIfAborted(signal);
-        if (pending.length) void this.recommendations?.refreshUser(userId);
+        if (pending.length)
+          void this.recommendations?.refreshUser(options.requesterId ?? userId);
         return { pending, heldAutoplay, omitted: fit.omitted };
       } catch (error) {
         for (const { entry, controller } of pending) {
@@ -3869,6 +3875,7 @@ export class Coordinator {
           return { ok: false as const, error: "reference is required." };
         return this.agentAdd(userId, command.reference, undefined, {
           awaitPreparation: Boolean(options.mcp),
+          ...(command.requestedBy ? { requesterId: command.requestedBy } : {}),
         });
       case "remove":
         if (!command.trackId)

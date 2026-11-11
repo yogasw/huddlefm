@@ -71,6 +71,8 @@ export type IntegrationCommand = {
   position?: number;
   seconds?: number;
   percent?: number;
+  // Who asked an agent for the song, credited on it instead of the agent.
+  requestedBy?: string;
   displayMode?: (typeof displayModes)[number];
   autoplay?: boolean;
   autoplayMode?: (typeof autoplayModes)[number];
