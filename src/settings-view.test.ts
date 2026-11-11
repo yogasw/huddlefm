@@ -568,6 +568,6 @@ test("switches what every channel's new sessions start with", () => {
   const text = JSON.stringify(view.blocks);
   expect(text).toContain("✅ Keep the player at the bottom of the thread");
   expect(text).toContain('"value":"anchor:off"');
-  expect(text).toContain("⬜ Everyone in the huddle can use the player");
+  expect(text).toContain("⬜ Everyone in the huddle can use the whole player");
   expect(text).toContain('"value":"everyone:on"');
 });

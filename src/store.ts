@@ -82,9 +82,7 @@ export const everyChannel = "*";
 export function everyoneCanPlay(permissions: readonly string[] | undefined) {
   return (
     !!permissions &&
-    permissionPresets.collaborative.every((capability) =>
-      permissions.includes(capability),
-    )
+    capabilities.every((capability) => permissions.includes(capability))
   );
 }
 

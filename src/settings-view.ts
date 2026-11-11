@@ -890,7 +890,7 @@ function everyChannelBlocks(
     ),
     toggle(
       "everyone",
-      "Everyone in the huddle can use the player",
+      "Everyone in the huddle can use the whole player, ending the session too",
       every.everyonePlays,
       "every_channel_everyone",
     ),

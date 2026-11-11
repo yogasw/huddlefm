@@ -8051,9 +8051,9 @@ export class Coordinator {
     const saved = this.store.channelDefaults(everyChannel) ?? {};
     if (setting === "anchor") saved.anchorEnabled = on;
     else if (setting === "everyone")
-      saved.permissions = (
-        on ? permissionPresets.collaborative : permissionPresets.default
-      ) as Capability[];
+      saved.permissions = on
+        ? [...capabilities]
+        : (permissionPresets.default as Capability[]);
     else return;
     this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
     this.audit.record("every_channel.updated", interaction.userId, {
