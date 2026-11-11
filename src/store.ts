@@ -78,14 +78,6 @@ export function usableHuddleMixSources(
 // a channel's own saved defaults win over it.
 export const everyChannel = "*";
 
-/** Whether permissions let everyone in the Huddle use the whole player. */
-export function everyoneCanPlay(permissions: readonly string[] | undefined) {
-  return (
-    !!permissions &&
-    capabilities.every((capability) => permissions.includes(capability))
-  );
-}
-
 export type ChannelDefaults = {
   volume?: number;
   autoplay?: AutoplayMode;

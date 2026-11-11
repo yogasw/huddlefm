@@ -19,9 +19,7 @@ import {
   mediaModes,
   type MediaMode,
   permissionPresets,
-  type Capability,
   everyChannel,
-  everyoneCanPlay,
   recentTrackLimit,
   scrobblingModes,
   Store,
@@ -7229,9 +7227,8 @@ export class Coordinator {
                 anchor:
                   this.store.channelDefaults(everyChannel)?.anchorEnabled ===
                   true,
-                everyonePlays: everyoneCanPlay(
-                  this.store.channelDefaults(everyChannel)?.permissions,
-                ),
+                everyoneHost:
+                  this.store.channelDefaults(everyChannel)?.communism === true,
               },
             },
           }
@@ -8050,10 +8047,8 @@ export class Coordinator {
     const on = value === "on";
     const saved = this.store.channelDefaults(everyChannel) ?? {};
     if (setting === "anchor") saved.anchorEnabled = on;
-    else if (setting === "everyone")
-      saved.permissions = on
-        ? [...capabilities]
-        : (permissionPresets.default as Capability[]);
+    // Everyone as host is communism mode, from the session's start.
+    else if (setting === "everyone") saved.communism = on;
     else return;
     this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
     this.audit.record("every_channel.updated", interaction.userId, {

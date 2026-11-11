@@ -321,7 +321,7 @@ export type SettingsViewOptions = {
       checkedAt?: number;
     };
     // What admins set for every channel's new sessions.
-    everyChannel?: { anchor: boolean; everyonePlays: boolean };
+    everyChannel?: { anchor: boolean; everyoneHost: boolean };
   };
   session: SessionSettingsView;
   user: UserSettingsView;
@@ -864,7 +864,7 @@ export function youtubeStatus(
 }
 
 function everyChannelBlocks(
-  every: { anchor: boolean; everyonePlays: boolean } | undefined,
+  every: { anchor: boolean; everyoneHost: boolean } | undefined,
 ) {
   if (!every) return [];
   const toggle = (
@@ -890,8 +890,8 @@ function everyChannelBlocks(
     ),
     toggle(
       "everyone",
-      "Everyone in the huddle can use the whole player, ending the session too",
-      every.everyonePlays,
+      "Everyone in the huddle is host (communism mode)",
+      every.everyoneHost,
       "every_channel_everyone",
     ),
     context(
