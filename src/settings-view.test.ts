@@ -552,3 +552,22 @@ test("marks whether YouTube plays with the cookies", () => {
   ).toStartWith("❌ *Refused.*");
   expect(youtubeStatus({ signedIn: false, invalid: false })).toStartWith("⏳");
 });
+
+test("switches what every channel's new sessions start with", () => {
+  const view = settingsView(
+    options({
+      tab: "admin",
+      access: { ...access, botAdmin: true },
+      bot: {
+        admins: [],
+        youtube: { signedIn: false, invalid: false },
+        everyChannel: { anchor: true, everyonePlays: false },
+      },
+    }),
+  );
+  const text = JSON.stringify(view.blocks);
+  expect(text).toContain("✅ Keep the player at the bottom of the thread");
+  expect(text).toContain('"value":"anchor:off"');
+  expect(text).toContain("⬜ Everyone in the huddle can use the player");
+  expect(text).toContain('"value":"everyone:on"');
+});

@@ -320,6 +320,8 @@ export type SettingsViewOptions = {
       works?: boolean;
       checkedAt?: number;
     };
+    // What admins set for every channel's new sessions.
+    everyChannel?: { anchor: boolean; everyonePlays: boolean };
   };
   session: SessionSettingsView;
   user: UserSettingsView;
@@ -840,6 +842,8 @@ export function submittedScrobbleServices(
 }
 
 export const uploadYouTubeCookiesAction = "upload_youtube_cookies";
+// The Admin tab's switches for every channel, valued `<setting>:on|off`.
+export const everyChannelAction = "every_channel_default";
 
 // The cookies' state with a mark: ✅ YouTube plays, ❌ it does not, ⏳ not
 // checked yet.
@@ -859,6 +863,44 @@ export function youtubeStatus(
   return `⏳ *${youtube.signedIn ? `Signed in${since}` : "Not signed in"}.* YouTube has not been checked yet.`;
 }
 
+function everyChannelBlocks(
+  every: { anchor: boolean; everyonePlays: boolean } | undefined,
+) {
+  if (!every) return [];
+  const toggle = (
+    setting: string,
+    label: string,
+    on: boolean,
+    blockId: string,
+  ) => ({
+    type: "section",
+    block_id: blockId,
+    text: { type: "mrkdwn", text: `${on ? "✅" : "⬜"} ${label}` },
+    accessory: button(everyChannelAction, plain(on ? "Turn off" : "Turn on"), {
+      value: `${setting}:${on ? "off" : "on"}`,
+    }),
+  });
+  return [
+    { type: "header", text: plain("Every channel") },
+    toggle(
+      "anchor",
+      "Keep the player at the bottom of the thread",
+      every.anchor,
+      "every_channel_anchor",
+    ),
+    toggle(
+      "everyone",
+      "Everyone in the huddle can use the player",
+      every.everyonePlays,
+      "every_channel_everyone",
+    ),
+    context(
+      "every_channel_hint",
+      "For new sessions. A channel's own saved defaults still win.",
+    ),
+  ];
+}
+
 function adminBlocks(options: SettingsViewOptions) {
   const bot = options.bot;
   if (!bot) return [];
@@ -874,6 +916,7 @@ function adminBlocks(options: SettingsViewOptions) {
       "bot_admins_hint",
       "Set by ADMIN_USER_IDS. Admins are hosts and channel managers everywhere.",
     ),
+    ...everyChannelBlocks(bot.everyChannel),
     { type: "header", text: plain("YouTube cookies") },
     {
       type: "section",

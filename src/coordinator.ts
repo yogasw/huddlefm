@@ -19,6 +19,9 @@ import {
   mediaModes,
   type MediaMode,
   permissionPresets,
+  type Capability,
+  everyChannel,
+  everyoneCanPlay,
   recentTrackLimit,
   scrobblingModes,
   Store,
@@ -138,6 +141,7 @@ import {
   listenBrainzTokenView,
   selected,
   settingsTabActionPrefix,
+  everyChannelAction,
   settingsTabFromAction,
   settingsTabs,
   settingsView,
@@ -742,8 +746,11 @@ export class Coordinator {
         (track) => track !== this.current && track.status !== "played",
       );
     } else {
-      const defaults = store.channelDefaults(this.roomId);
-      if (defaults) this.applyChannelDefaults(defaults);
+      // A channel's own saved defaults win over what admins set for all.
+      const everywhere = store.channelDefaults(everyChannel);
+      const own = store.channelDefaults(this.roomId);
+      if (everywhere || own)
+        this.applyChannelDefaults({ ...everywhere, ...own });
     }
     // Communism mode has no host, however the session came to be in it.
     if (this.communism) this.hostId = undefined;
@@ -1279,6 +1286,7 @@ export class Coordinator {
           this.setChannelAutoJoin(interaction, false),
         claim_host: () => this.claimHost(interaction),
         start_communism: () => this.startCommunismFromSettings(interaction),
+        [everyChannelAction]: () => this.setEveryChannel(interaction),
         continue_lastfm: () => this.continueLastFm(interaction),
         disconnect_lastfm: () => this.disconnectLastFm(interaction),
         disconnect_listenbrainz: () => this.disconnectListenBrainz(interaction),
@@ -7217,6 +7225,14 @@ export class Coordinator {
             bot: {
               admins: [...this.config.adminUserIds!],
               youtube: this.tracks.youtubeCookieStatus(),
+              everyChannel: {
+                anchor:
+                  this.store.channelDefaults(everyChannel)?.anchorEnabled ===
+                  true,
+                everyonePlays: everyoneCanPlay(
+                  this.store.channelDefaults(everyChannel)?.permissions,
+                ),
+              },
             },
           }
         : {}),
@@ -8025,6 +8041,26 @@ export class Coordinator {
         this.allowed.has(capability),
       );
     this.plugins.refreshYou();
+  }
+
+  // The Admin tab's switches for every channel's new sessions.
+  private async setEveryChannel(interaction: Interaction) {
+    if (!this.botAdmin(interaction.userId)) return;
+    const [setting, value] = (interaction.value ?? "").split(":");
+    const on = value === "on";
+    const saved = this.store.channelDefaults(everyChannel) ?? {};
+    if (setting === "anchor") saved.anchorEnabled = on;
+    else if (setting === "everyone")
+      saved.permissions = (
+        on ? permissionPresets.collaborative : permissionPresets.default
+      ) as Capability[];
+    else return;
+    this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
+    this.audit.record("every_channel.updated", interaction.userId, {
+      setting,
+      on,
+    });
+    if (interaction.viewId) await this.updateSettings(interaction);
   }
 
   // Settings' Start communism mode button, past its confirmation.
