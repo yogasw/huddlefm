@@ -74,6 +74,20 @@ export function usableHuddleMixSources(
 }
 
 /** Session settings saved for a channel; a missing field keeps the default. */
+// The row of channel_defaults that holds what admins set for every channel;
+// a channel's own saved defaults win over it.
+export const everyChannel = "*";
+
+/** Whether permissions let everyone in the Huddle use the whole player. */
+export function everyoneCanPlay(permissions: readonly string[] | undefined) {
+  return (
+    !!permissions &&
+    permissionPresets.collaborative.every((capability) =>
+      permissions.includes(capability),
+    )
+  );
+}
+
 export type ChannelDefaults = {
   volume?: number;
   autoplay?: AutoplayMode;

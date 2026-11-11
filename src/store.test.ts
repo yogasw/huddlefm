@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { recentTrackLimit, Store } from "./store.ts";
+import { everyoneCanPlay, permissionPresets as presets } from "./store.ts";
 
 function createSession(
   store: Store,
@@ -1737,4 +1738,10 @@ test("keeps a video's measured loudness by source, and updates it", () => {
   store.setLoudness("youtube:abcdefghijk", -17);
   expect(store.loudness("youtube:abcdefghijk")).toBe(-17);
   expect(store.loudness("https://example.com/video.mp4")).toBe(-9);
+});
+
+test("knows when everyone in the huddle can use the player", () => {
+  expect(everyoneCanPlay([...presets.collaborative])).toBeTrue();
+  expect(everyoneCanPlay([...presets.default])).toBeFalse();
+  expect(everyoneCanPlay(undefined)).toBeFalse();
 });
