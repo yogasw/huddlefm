@@ -5376,7 +5376,9 @@ export class Coordinator {
     await this.destroyQueuedAutoplay(this.takeQueuedAutoplay());
   }
 
-  private async startNext() {
+  // `finished` is set when the song that was playing just ended, which has
+  // already been taken off `current`.
+  private async startNext(finished = false) {
     // After a restart, what was playing goes on first once it is ready
     // again, not whatever else was ready sooner.
     const interrupted = this.interrupted;
@@ -5385,7 +5387,7 @@ export class Coordinator {
     this.interrupted = undefined;
     const next = this.queue.find((track) => track.status === "ready");
     if (!next) {
-      const ended = Boolean(this.current) && !this.queue.length;
+      const ended = (finished || Boolean(this.current)) && !this.queue.length;
       this.playbackScrobbling?.finish();
       this.current = undefined;
       this.state = "ready";
@@ -6019,7 +6021,7 @@ export class Coordinator {
       watchedSeconds: this.watchedSeconds,
     });
     this.current = undefined;
-    await this.startNext();
+    await this.startNext(true);
   }
 
   /**

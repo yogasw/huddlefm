@@ -24,6 +24,7 @@ function setup(
     warningMs: number;
     footer?: string;
     huddleAccountId?: string;
+    queueEndMention?: string;
   } = {
     aloneMs: 60_000,
     idleMs: 600_000,
@@ -1899,6 +1900,51 @@ test("late media events cannot advance a newer track", async () => {
   await result.coordinator.mediaEvent("track_ended", { entryId: first });
   expect(plays()).toHaveLength(2);
   expect(plays().at(-1)?.entryId).toBe(second);
+  await result.coordinator.endFromSlack();
+});
+
+test("mentions the agent once the last song ends", async () => {
+  const tracks = {
+    resolve: async (value: string) => ({
+      sourceInput: `https://example.com/${value}`,
+      canonicalUrl: `https://example.com/${value}`,
+      sourceId: value,
+      title: value,
+      artist: "Artist",
+    }),
+    prepare: async (_track: unknown, _directory: string, id: string) =>
+      `${id}.opus`,
+  } as unknown as TrackCatalog;
+  const result = setup(tracks, {
+    aloneMs: 60_000,
+    idleMs: 600_000,
+    pausedMs: 600_000,
+    warningMs: 120_000,
+    queueEndMention: "U01TESTAGENT",
+  });
+  await result.coordinator.start();
+  await result.coordinator.action({
+    type: "block_actions",
+    userId: "host",
+    actionId: "add_track_to_queue",
+    value: "a",
+    channelId: "channel",
+    messageTs: "1",
+    triggerId: "",
+    metadata: "",
+    state: {},
+  });
+  const play = result.media.find(
+    (message) => (message as { type?: string }).type === "play",
+  ) as { entryId: string };
+  await result.coordinator.mediaEvent("track_ended", { entryId: play.entryId });
+  await until(() =>
+    result.posted.some((post) =>
+      String((post as unknown[])[2]).startsWith(
+        "<@U01TESTAGENT> The queue has ended.",
+      ),
+    ),
+  );
   await result.coordinator.endFromSlack();
 });
 
