@@ -54,10 +54,9 @@ itself moves to the app's bot user:
 - Thread messages are read from the app's own events, so the signed-in
   account's messages and DMs are not processed. Its realtime connection is
   still used for Huddle events (started, joined, left) and to join Huddles.
-- That account does not count as a listener: with nobody else in the Huddle,
-  HuddleFM leaves after `ALONE_TIMEOUT_MS`. Set `HUDDLE_ACCOUNT_LISTENS=true`
-  when its owner listens on another device, and HuddleFM then stays until it
-  is ended from the player, or nothing plays for `IDLE_TIMEOUT_MS`.
+- That account counts as a listener only while it is also in the Huddle on
+  another device, as its owner listening: with nobody else there, HuddleFM
+  leaves after `ALONE_TIMEOUT_MS`.
 
 | Variable              | Bot user mode                                                             |
 | --------------------- | ------------------------------------------------------------------------- |
@@ -148,7 +147,6 @@ receives events from channels it is in.
 | `QUEUE_END_MENTION`             | unset                  | A Slack user, such as an agent's bot, mentioned in the Huddle's thread when the queue runs out with autoplay off and someone still listening, once until a song plays again                                               |
 | `QUEUE_END_MESSAGE`             | `The queue has ended.` | What follows that mention; `{recent}` is the last five songs played                                                                                                                                                       |
 | `ALONE_TIMEOUT_MS`              | `120000`               | Leave when alone for this long                                                                                                                                                                                            |
-| `HUDDLE_ACCOUNT_LISTENS`        | `false`                | In bot user mode, count the signed-in account as a listener, so HuddleFM stays while only it is in the Huddle                                                                                                             |
 | `IDLE_TIMEOUT_MS`               | `600000`               | Leave when idle for this long                                                                                                                                                                                             |
 | `PAUSED_TIMEOUT_MS`             | `600000`               | Leave when paused for this long                                                                                                                                                                                           |
 | `CHIME_MEDIA_REGION`            | `ap-southeast-2`       | AWS region for Chime media                                                                                                                                                                                                |

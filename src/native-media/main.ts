@@ -14,6 +14,7 @@ import {
   type ChimeMeeting,
 } from "./chime-link.ts";
 import { ContentShares, contentSuffix } from "./content-shares.ts";
+import { AttendeeUsers } from "./attendee-users.ts";
 import { DataChannel, dataTopic } from "./data-channel.ts";
 import { FfmpegDecoder, probeDuration, sampleRate } from "./decoder.ts";
 import { SpeechSignals } from "./speech.ts";
@@ -63,6 +64,7 @@ let share: ChimeLink | undefined;
 let videoMode = false;
 let shareFailures = 0;
 let contentShares: ContentShares | undefined;
+let attendeeUsers: AttendeeUsers | undefined;
 /** HuddleFM's messages with clients over the Chime data channel. */
 let dataChannel: DataChannel | undefined;
 /** Numbers for entries, so the video worker can tell whose clock it has. */
@@ -135,10 +137,12 @@ async function start(bootstrap: ChimeBootstrap) {
       onSignaling: () => {
         speech?.reset();
         contentShares?.reset();
+        attendeeUsers?.reset();
       },
       onFrame: (frame) => {
         speech?.handle(frame);
         contentShares?.handle(frame);
+        attendeeUsers?.handle(frame);
         dataChannel?.handle(frame);
       },
       onConnected: () => {
@@ -160,6 +164,9 @@ async function start(bootstrap: ChimeBootstrap) {
   speech = new SpeechSignals(chime.attendeeId, audio.ducking, audio.applyDuck);
   contentShares = new ContentShares(chime.attendeeId, (count) =>
     emit("content_shares", { count }),
+  );
+  attendeeUsers = new AttendeeUsers(chime.attendeeId, (userIds) =>
+    emit("attendee_users", { userIds }),
   );
   dataChannel = new DataChannel(
     chime.attendeeId,

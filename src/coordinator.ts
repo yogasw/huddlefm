@@ -482,6 +482,8 @@ export class Coordinator {
   private watchedSeconds = 0;
   // Other people's screen shares in the huddle, as media last counted them.
   private contentShares = 0;
+  // Slack users connected to the meeting on attendees other than HuddleFM's.
+  private attendeeUsers = new Set<string>();
   // Preparations of tracks already prepared, for the other mode.
   private reprepares = new Map<string, AbortController>();
   // The open request for video mode, in a message to the host.
@@ -1311,6 +1313,7 @@ export class Coordinator {
       seconds?: number;
       count?: number;
       reason?: string;
+      userIds?: unknown;
     },
   ) {
     if (this.state === "suspended") return;
@@ -1358,6 +1361,26 @@ export class Coordinator {
         "Playback position updated",
       );
       return;
+    }
+    if (type === "attendee_users") {
+      const userIds: unknown[] = Array.isArray(details?.userIds)
+        ? details.userIds
+        : [];
+      this.attendeeUsers = new Set(
+        userIds.filter((id): id is string => typeof id === "string"),
+      );
+      this.log.info(
+        {
+          event: "attendee_users_changed",
+          users: this.attendeeUsers.size,
+          accountListening: Boolean(
+            this.config.huddleAccountId &&
+            this.attendeeUsers.has(this.config.huddleAccountId),
+          ),
+        },
+        "Huddle attendees changed",
+      );
+      return this.enqueue(async () => this.refreshIdle());
     }
     if (type === "content_shares") {
       // Other people's screen shares, which video mode needs a slot beside.
@@ -9478,7 +9501,11 @@ export class Coordinator {
     if (this.inactive()) return;
     const alone = () =>
       ![...this.participants].some(
-        (id) => id !== this.botUserId && id !== this.config.huddleAccountId,
+        (id) =>
+          id !== this.botUserId &&
+          // The account HuddleFM joins as counts while its owner listens on
+          // another device.
+          (id !== this.config.huddleAccountId || this.attendeeUsers.has(id)),
       );
     if (alone() && !this.aloneTimer) {
       this.warnLeaving(
