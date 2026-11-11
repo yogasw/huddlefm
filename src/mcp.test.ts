@@ -143,14 +143,26 @@ test("credits a song to who asked the agent for it", async () => {
     reference: "ref",
     requested_by: "U01TESTUSER",
   });
-  await call("add", {
-    channel: "C01ALLOWED",
-    thread_ts: "1.0",
-    reference: "ref",
-    requested_by: "not a user",
-  });
+  expect(
+    (
+      await call("add", {
+        channel: "C01ALLOWED",
+        thread_ts: "1.0",
+        reference: "ref",
+        requested_by: "not a user",
+      })
+    ).isError,
+  ).toBe(true);
+  expect(
+    (
+      await call("add", {
+        channel: "C01ALLOWED",
+        thread_ts: "1.0",
+        reference: "ref",
+      })
+    ).isError,
+  ).toBe(true);
   expect(ran.map(({ command }) => command.requestedBy)).toEqual([
     "U01TESTUSER",
-    undefined,
   ]);
 });

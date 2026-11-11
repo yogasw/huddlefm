@@ -120,10 +120,10 @@ export const mcpTools = [
       requested_by: {
         type: "string",
         description:
-          "Slack user ID of who asked for the song, shown as who added it",
+          "Slack user ID of who asked for the song, shown as who added it; the agent's own ID when nobody asked",
       },
     },
-    ["reference"],
+    ["reference", "requested_by"],
   ),
   tool("skip", "Skip to the next song", "skip"),
   tool("previous", "Go back to the previous song", "previous"),
@@ -261,6 +261,12 @@ async function call(
     /^[UW][A-Z0-9]+$/.test(args.requested_by)
   )
     command.requestedBy = args.requested_by;
+  // Every song an agent adds is credited to someone, not the MCP user.
+  else if (definition.type === "add")
+    return text(
+      { error: "requested_by must be the Slack user ID of who asked" },
+      true,
+    );
   if (typeof args.percent === "number") command.percent = args.percent;
   for (const [key, kind] of Object.entries(sessionSettings)) {
     const value =
