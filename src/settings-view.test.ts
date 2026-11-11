@@ -9,6 +9,7 @@ import {
   visibleSettingsTabs,
   yourDataView,
   type SettingsViewOptions,
+  youtubeStatus,
 } from "./settings-view.ts";
 
 const access = {
@@ -537,4 +538,17 @@ test("shows the Admin tab to bot admins only", () => {
   expect(text).toContain("<@U01TESTADMIN>");
   expect(text).toContain("<@U02TESTADMIN>");
   expect(text).toContain("upload_youtube_cookies");
+});
+
+test("marks whether YouTube plays with the cookies", () => {
+  expect(
+    youtubeStatus({ signedIn: true, invalid: false, works: true }),
+  ).toStartWith("✅ *Signed in*");
+  expect(
+    youtubeStatus({ signedIn: true, invalid: false, works: false }),
+  ).toStartWith("❌ *Signed in, but YouTube refuses this server*");
+  expect(
+    youtubeStatus({ signedIn: true, invalid: true, works: true }),
+  ).toStartWith("❌ *Refused.*");
+  expect(youtubeStatus({ signedIn: false, invalid: false })).toStartWith("⏳");
 });

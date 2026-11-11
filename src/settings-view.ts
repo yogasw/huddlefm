@@ -312,7 +312,14 @@ export type SettingsViewOptions = {
   // What the Admin tab shows, to ADMIN_USER_IDS only.
   bot?: {
     admins: string[];
-    youtube: { signedIn: boolean; invalid: boolean; loadedAt?: number };
+    youtube: {
+      signedIn: boolean;
+      invalid: boolean;
+      loadedAt?: number;
+      // Whether YouTube let this server download at its last check.
+      works?: boolean;
+      checkedAt?: number;
+    };
   };
   session: SessionSettingsView;
   user: UserSettingsView;
@@ -834,15 +841,29 @@ export function submittedScrobbleServices(
 
 export const uploadYouTubeCookiesAction = "upload_youtube_cookies";
 
+// The cookies' state with a mark: ✅ YouTube plays, ❌ it does not, ⏳ not
+// checked yet.
+export function youtubeStatus(
+  youtube: NonNullable<SettingsViewOptions["bot"]>["youtube"],
+) {
+  const checked = youtube.checkedAt
+    ? ` Checked ${slackDate(youtube.checkedAt)}.`
+    : "";
+  const since = youtube.loadedAt ? ` since ${slackDate(youtube.loadedAt)}` : "";
+  if (youtube.invalid)
+    return `❌ *Refused.* YouTube says the cookies are no longer valid; upload new ones.${checked}`;
+  if (youtube.works === false)
+    return `❌ *${youtube.signedIn ? `Signed in${since}` : "Not signed in"}, but YouTube refuses this server*, so songs play from SoundCloud.${checked}`;
+  if (youtube.works)
+    return `✅ *${youtube.signedIn ? `Signed in${since}` : "Not signed in"}*, and YouTube plays.${checked}`;
+  return `⏳ *${youtube.signedIn ? `Signed in${since}` : "Not signed in"}.* YouTube has not been checked yet.`;
+}
+
 function adminBlocks(options: SettingsViewOptions) {
   const bot = options.bot;
   if (!bot) return [];
   const youtube = bot.youtube;
-  const status = !youtube.signedIn
-    ? "*Not signed in.* YouTube plays signed out."
-    : youtube.invalid
-      ? "*Refused.* YouTube says the cookies are no longer valid; upload new ones."
-      : `*Signed in*${youtube.loadedAt ? ` since ${slackDate(youtube.loadedAt)}` : ""}.`;
+  const status = youtubeStatus(youtube);
   return [
     { type: "header", text: plain("Admins") },
     section(

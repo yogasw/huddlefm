@@ -752,6 +752,8 @@ export class TrackCatalog {
   // waiting for that costs the first songs most of a minute each.
   private youtubeRefusedUntil = Date.now() + 2 * 60_000;
   private youtubeProbeTimer?: ReturnType<typeof setInterval>;
+  // What the last check of YouTube found, for the Admin tab.
+  private youtubeChecked?: { works: boolean; checkedAt: number };
   // SoundCloud's matches for each YouTube song looked up, best first.
   private soundCloudFound = new Map<string, TrackMetadata[]>();
   private activePreparations = 0;
@@ -828,7 +830,10 @@ export class TrackCatalog {
 
   /** Whether yt-dlp is signed in to YouTube, for the Admin tab. */
   youtubeCookieStatus() {
-    return this.cookies?.status() ?? { signedIn: false, invalid: false };
+    return {
+      ...(this.cookies?.status() ?? { signedIn: false, invalid: false }),
+      ...this.youtubeChecked,
+    };
   }
 
   /**
@@ -911,11 +916,13 @@ export class TrackCatalog {
           "YouTube downloads work again from this server",
         );
       this.youtubeRefusedUntil = 0;
+      this.youtubeChecked = { works: true, checkedAt: Date.now() };
       return { ok: true };
     } catch (error) {
       const reason = trackFailureDetail(error) ?? String(error);
       if (this.closing.signal.aborted) return { ok: false, reason };
       this.youtubeRefusedUntil = Date.now() + youtubeProbeInterval * 2;
+      this.youtubeChecked = { works: false, checkedAt: Date.now() };
       log.warn(
         { event: "youtube_probe_refused", reason },
         "YouTube refuses this server; songs play from SoundCloud",
