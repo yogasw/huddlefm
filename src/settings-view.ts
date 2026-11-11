@@ -896,7 +896,7 @@ function everyChannelBlocks(
     ),
     context(
       "every_channel_hint",
-      "For new sessions. A channel's own saved defaults still win.",
+      "For this session and new ones. A channel's own saved defaults still win for its new sessions.",
     ),
   ];
 }

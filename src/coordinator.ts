@@ -8062,6 +8062,15 @@ export class Coordinator {
       setting,
       on,
     });
+    // The session it was switched from takes it at once, as far as it can:
+    // communism mode, once on, lasts until the session ends.
+    if (setting === "anchor" && on !== this.anchorEnabled) {
+      if (!on) clearTimeout(this.anchorTimer);
+      this.anchorEnabled = on;
+      this.store.setSession(this.id, { anchorEnabled: on });
+    } else if (setting === "everyone" && on)
+      this.startCommunism(interaction.userId);
+    await this.render();
     if (interaction.viewId) await this.updateSettings(interaction);
   }
 
