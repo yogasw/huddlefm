@@ -137,32 +137,27 @@ test("changes only the settings it is given, dropping unknown modes", async () =
 
 test("credits a song to who asked the agent for it", async () => {
   ran.length = 0;
-  await call("add", {
+  for (const requested_by of [
+    "U01TESTUSER",
+    "<@U01TESTUSER>",
+    "<@U01TESTUSER|dev>",
+    "u01testuser",
+  ])
+    await call("add", {
+      channel: "C01ALLOWED",
+      thread_ts: "1.0",
+      reference: "ref",
+      requested_by,
+    });
+  expect(ran.map(({ command }) => command.requestedBy)).toEqual(
+    Array(4).fill("U01TESTUSER"),
+  );
+  // Without who asked, the song still goes in, as a recommendation.
+  const missing = await call("add", {
     channel: "C01ALLOWED",
     thread_ts: "1.0",
     reference: "ref",
-    requested_by: "U01TESTUSER",
   });
-  expect(
-    (
-      await call("add", {
-        channel: "C01ALLOWED",
-        thread_ts: "1.0",
-        reference: "ref",
-        requested_by: "not a user",
-      })
-    ).isError,
-  ).toBe(true);
-  expect(
-    (
-      await call("add", {
-        channel: "C01ALLOWED",
-        thread_ts: "1.0",
-        reference: "ref",
-      })
-    ).isError,
-  ).toBe(true);
-  expect(ran.map(({ command }) => command.requestedBy)).toEqual([
-    "U01TESTUSER",
-  ]);
+  expect(missing.isError).toBe(false);
+  expect(missing.value.note).toContain("recommendation");
 });

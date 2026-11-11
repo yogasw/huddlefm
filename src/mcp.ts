@@ -120,10 +120,10 @@ export const mcpTools = [
       requested_by: {
         type: "string",
         description:
-          "Slack user ID of who asked for the song, shown as who added it; the agent's own ID when nobody asked",
+          "Slack user ID of who asked for the song, shown as who added it; leave it out when nobody asked and the song shows as a recommendation",
       },
     },
-    ["reference", "requested_by"],
+    ["reference"],
   ),
   tool("skip", "Skip to the next song", "skip"),
   tool("previous", "Go back to the previous song", "previous"),
@@ -153,6 +153,17 @@ export const mcpTools = [
     ["percent"],
   ),
 ];
+
+/** A Slack user ID from `U0ABC`, `<@U0ABC>`, `<@U0ABC|name>` or `u0abc`. */
+export function slackUserId(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  const id = value
+    .trim()
+    .replace(/^<@/, "")
+    .replace(/(\|[^>]*)?>$/, "")
+    .toUpperCase();
+  return /^[UW][A-Z0-9]{2,}$/.test(id) ? id : undefined;
+}
 
 function same(a: string, b: string) {
   const left = Buffer.from(a);
@@ -256,17 +267,9 @@ async function call(
   };
   if (typeof args.query === "string") command.query = args.query;
   if (typeof args.reference === "string") command.reference = args.reference;
-  if (
-    typeof args.requested_by === "string" &&
-    /^[UW][A-Z0-9]+$/.test(args.requested_by)
-  )
-    command.requestedBy = args.requested_by;
-  // Every song an agent adds is credited to someone, not the MCP user.
-  else if (definition.type === "add")
-    return text(
-      { error: "requested_by must be the Slack user ID of who asked" },
-      true,
-    );
+  // Agents write the ID as a mention or lowercase as often as bare.
+  const requestedBy = slackUserId(args.requested_by);
+  if (requestedBy) command.requestedBy = requestedBy;
   if (typeof args.percent === "number") command.percent = args.percent;
   for (const [key, kind] of Object.entries(sessionSettings)) {
     const value =
@@ -278,5 +281,12 @@ async function call(
     if (value !== undefined) Object.assign(command, { [key]: value });
   }
   const outcome = await session.run(host.actorId, command);
+  // A song without who asked still plays, as a recommendation, and the
+  // agent hears how to credit the next one to a person.
+  if (definition.type === "add" && !requestedBy && outcome.ok)
+    return text({
+      ...outcome,
+      note: "No Slack user ID in requested_by, so the song shows as a recommendation",
+    });
   return text(outcome, !outcome.ok);
 }

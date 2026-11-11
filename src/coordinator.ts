@@ -88,6 +88,7 @@ import {
   elapsed,
   escape,
   queueEndText,
+  recommendedBy,
   trackSource,
   footerContext,
   icon,
@@ -1645,7 +1646,7 @@ export class Coordinator {
         await this.render();
         this.queueChanged();
         throwIfAborted(signal);
-        if (pending.length)
+        if (pending.length && options.requesterId !== recommendedBy)
           void this.recommendations?.refreshUser(options.requesterId ?? userId);
         return { pending, heldAutoplay, omitted: fit.omitted };
       } catch (error) {
@@ -3881,7 +3882,13 @@ export class Coordinator {
           return { ok: false as const, error: "reference is required." };
         return this.agentAdd(userId, command.reference, undefined, {
           awaitPreparation: Boolean(options.mcp),
-          ...(command.requestedBy ? { requesterId: command.requestedBy } : {}),
+          // An agent's song for nobody in particular reads as a
+          // recommendation rather than as the MCP user's.
+          ...(command.requestedBy
+            ? { requesterId: command.requestedBy }
+            : options.mcp
+              ? { requesterId: recommendedBy }
+              : {}),
         });
       case "remove":
         if (!command.trackId)
@@ -4652,7 +4659,7 @@ export class Coordinator {
   private stageEntries(userId: string, items: QueuedItem[]) {
     // The player names who added each song, so the name is looked up while
     // the songs are prepared rather than when the first starts.
-    if (items.length && userId !== this.botUserId)
+    if (items.length && userId !== this.botUserId && userId !== recommendedBy)
       void this.slack.displayName(userId);
     const entries = items.map((metadata): Entry => ({
       ...metadata,
@@ -8062,6 +8069,15 @@ export class Coordinator {
       setting,
       on,
     });
+    // The session it was switched from takes it at once, as far as it can:
+    // communism mode, once on, lasts until the session ends.
+    if (setting === "anchor" && on !== this.anchorEnabled) {
+      if (!on) clearTimeout(this.anchorTimer);
+      this.anchorEnabled = on;
+      this.store.setSession(this.id, { anchorEnabled: on });
+    } else if (setting === "everyone" && on)
+      this.startCommunism(interaction.userId);
+    await this.render();
     if (interaction.viewId) await this.updateSettings(interaction);
   }
 
