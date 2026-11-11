@@ -120,7 +120,7 @@ export const mcpTools = [
       requested_by: {
         type: "string",
         description:
-          "Slack user ID of who asked for the song, shown as who added it; the agent's own ID when nobody asked",
+          "Slack user ID of who asked for the song, shown as who added it; leave it out when nobody asked and the song shows as a recommendation",
       },
     },
     ["reference"],
@@ -281,13 +281,12 @@ async function call(
     if (value !== undefined) Object.assign(command, { [key]: value });
   }
   const outcome = await session.run(host.actorId, command);
-  // A song without who asked still plays, credited to the MCP user, and the
-  // agent hears how to credit the next one.
+  // A song without who asked still plays, as a recommendation, and the
+  // agent hears how to credit the next one to a person.
   if (definition.type === "add" && !requestedBy && outcome.ok)
     return text({
       ...outcome,
-      warning:
-        "requested_by was missing or not a Slack user ID, so the song shows the MCP user as who added it",
+      note: "No Slack user ID in requested_by, so the song shows as a recommendation",
     });
   return text(outcome, !outcome.ok);
 }

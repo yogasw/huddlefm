@@ -278,9 +278,14 @@ export function artworkIcon(track?: { artwork?: string; title: string }) {
   };
 }
 
+// Who a song an agent added for nobody in particular is credited to: it
+// reads as a recommendation, like autoplay's.
+export const recommendedBy = "recommended";
+
 export function addedBy(track: { automatic?: boolean; requesterId: string }) {
   // A listener can take their name off the songs they added.
-  if (track.automatic) return "Autoplay recommendation";
+  if (track.automatic || track.requesterId === recommendedBy)
+    return "Autoplay recommendation";
   return track.requesterId
     ? `Added by <@${track.requesterId}>`
     : "Added by a listener";

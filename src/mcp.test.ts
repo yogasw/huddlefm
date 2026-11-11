@@ -152,12 +152,12 @@ test("credits a song to who asked the agent for it", async () => {
   expect(ran.map(({ command }) => command.requestedBy)).toEqual(
     Array(4).fill("U01TESTUSER"),
   );
-  // Without who asked, the song still goes in, with a warning.
+  // Without who asked, the song still goes in, as a recommendation.
   const missing = await call("add", {
     channel: "C01ALLOWED",
     thread_ts: "1.0",
     reference: "ref",
   });
   expect(missing.isError).toBe(false);
-  expect(missing.value.warning).toContain("requested_by");
+  expect(missing.value.note).toContain("recommendation");
 });

@@ -5,6 +5,8 @@ import {
   useStandardEmoji,
   withEmoji,
   queueEndText,
+  addedBy,
+  recommendedBy,
 } from "./coordinator-ui.ts";
 
 test("shows custom emoji the workspace lacks as standard ones", () => {
@@ -54,4 +56,13 @@ test("tells an agent the queue ended, with the last songs when asked", () => {
       "Queue over. Recently: {recent}",
     ),
   ).toBe("<@U01TESTAGENT> Queue over. Recently: Band — Song &lt;1&gt;, Song 2");
+});
+
+test("credits an agent's song for nobody as a recommendation", () => {
+  expect(addedBy({ requesterId: recommendedBy })).toBe(
+    "Autoplay recommendation",
+  );
+  expect(addedBy({ requesterId: "U01TESTUSER" })).toBe(
+    "Added by <@U01TESTUSER>",
+  );
 });
