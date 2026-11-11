@@ -29,6 +29,7 @@ import {
 import { ScrobbleDispatcher } from "./scrobbling.ts";
 import { SlackAppAdapter, type Interaction } from "./slack-app.ts";
 import { uploadYouTubeCookiesAction } from "./settings-view.ts";
+import { mcpResponse } from "./mcp.ts";
 import {
   SlackHuddleAdapter,
   huddleHasParticipant,
@@ -40,6 +41,7 @@ import {
   integrationReply,
   isAllowlisted,
   parseIntegrationMessage,
+  sessionMatchesChannel,
 } from "./integration.ts";
 import { playWindowMs, skipWindowMs } from "./fatigue.ts";
 import { Store, type SavedSession } from "./store.ts";
@@ -1459,6 +1461,40 @@ const server = Bun.serve({
       });
     },
     "/favicon.ico": () => new Response(null, { status: 204 }),
+    "/mcp": (request: Request) =>
+      mcpResponse(request, {
+        token: config.mcpToken,
+        channels: config.mcpChannelIds,
+        actorId: config.mcpUserId ?? [...config.adminUserIds][0],
+        version: "1",
+        session(channel) {
+          const coordinator = [...runtimes.values()]
+            .map((runtime) => runtime.coordinator)
+            .find((item) => item && sessionMatchesChannel(item.room, channel));
+          return coordinator
+            ? {
+                id: coordinator.id,
+                run: (userId, command) =>
+                  coordinator.mcpCommand(userId, command),
+              }
+            : undefined;
+        },
+        sessions: () =>
+          [...runtimes.values()].flatMap(({ coordinator }) =>
+            coordinator
+              ? [
+                  {
+                    id: coordinator.id,
+                    channels: [
+                      coordinator.room.sourceChannelId,
+                      coordinator.room.uiChannelId,
+                      coordinator.room.companionChannelId,
+                    ].filter((id): id is string => Boolean(id)),
+                  },
+                ]
+              : [],
+          ),
+      }),
     "/join": {
       POST: async (request: Request) => {
         const denied = controlDenied(request, config.localControlToken);
@@ -1719,7 +1755,19 @@ async function youtubeCookies(interaction: Interaction) {
     await catalog.replaceYouTubeCookies(
       await slackApp.takeUploadedFile(fileId),
     );
-    reply = "YouTube cookies updated. The next song signs in with them.";
+    await slackApp.dm(
+      interaction.userId,
+      "YouTube cookies saved. Checking them with a YouTube download…",
+    );
+    const check = await catalog.checkYouTubeCookies();
+    reply =
+      check.verdict === "works"
+        ? ":white_check_mark: The cookies work: YouTube downloads from this server again."
+        : check.verdict === "refused"
+          ? ":x: YouTube refused these cookies (signed out or expired). Export them again from a private window and upload the new file."
+          : ":warning: The cookies are saved, but YouTube still blocks downloads from this server's address, so songs keep playing from SoundCloud.";
+    if (!check.ok && check.reason)
+      reply += `\n> ${check.reason.replace(/\s+/g, " ").slice(0, 200)}`;
   } catch (error) {
     log.warn(
       { event: "youtube_cookies_upload_failed", err: error },

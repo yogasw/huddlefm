@@ -133,6 +133,9 @@ export function loadConfig() {
       process.env.TRACK_DOWNLOAD_LIMIT_BYTES ?? 100_000_000,
     ),
     initialVolume: Number(process.env.INITIAL_VOLUME ?? 0.35),
+    // How many autoplay picks are kept queued while autoplay is on, so the
+    // queue shows what comes and any can be removed.
+    autoplayQueue: parseWholeNumber(process.env.AUTOPLAY_QUEUE, 10, 1, 50),
     // Autoplay for a new session until a channel's defaults say otherwise.
     autoplay: autoplayModes.find((mode) => mode === process.env.AUTOPLAY),
     duckingMode: parseDuckingMode(process.env.DUCKING_MODE),
@@ -174,6 +177,11 @@ export function loadConfig() {
     // HuddleFM's own admins: hosts and channel managers everywhere, and the
     // only ones who see the Admin tab.
     adminUserIds: parseIds(process.env.ADMIN_USER_IDS),
+    // HuddleFM's MCP server, at /mcp: on with a token, acting only in the
+    // listed channels, as MCP_USER_ID or else the first admin.
+    mcpToken: optionalText(process.env.MCP_TOKEN),
+    mcpChannelIds: parseIds(process.env.MCP_CHANNEL_IDS),
+    mcpUserId: optionalText(process.env.MCP_USER_ID),
     rolePermissions: parseRolePermissions(process.env),
     excludedUserIds: parseIds(process.env.EXCLUDED_USER_IDS),
     integrationUserIds: parseIds(process.env.INTEGRATION_USER_IDS),

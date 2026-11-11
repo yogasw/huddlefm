@@ -86,6 +86,7 @@ import {
   context,
   elapsed,
   escape,
+  trackSource,
   footerContext,
   icon,
   input,
@@ -580,6 +581,7 @@ export class Coordinator {
       queueLimit: number;
       initialVolume: number;
       autoplay?: AutoplayMode;
+      autoplayQueue?: number;
       duckingMode: DuckingMode;
       aloneMs: number;
       idleMs: number;
@@ -3767,6 +3769,36 @@ export class Coordinator {
     );
   }
 
+  /**
+   * Runs a command from HuddleFM's MCP server as `userId`, with that user's
+   * permissions in the session, as a granted integration's would run.
+   */
+  async mcpCommand(userId: string, command: IntegrationCommand) {
+    if (this.inactive())
+      return { ok: false as const, error: "This session is not active." };
+    let result: Awaited<ReturnType<Coordinator["runIntegrationCommand"]>>;
+    try {
+      await this.primeManager(userId);
+      const run = { userId, done: false };
+      try {
+        result = await this.integrationRuns.run(run, () =>
+          this.runIntegrationCommand(userId, command),
+        );
+      } finally {
+        run.done = true;
+      }
+    } catch (error) {
+      result = { ok: false as const, error: message(error) };
+    }
+    if (command.type !== "status")
+      this.audit.record("mcp.command", userId, {
+        sessionId: this.id,
+        type: command.type,
+        ok: result.ok,
+      });
+    return result;
+  }
+
   private async runIntegrationCommand(
     userId: string,
     command: IntegrationCommand,
@@ -5116,10 +5148,14 @@ export class Coordinator {
   }
 
   // Autoplay only ever tops up an empty queue, one song at a time.
+  // Autoplay fills in behind nothing anyone asked for, up to AUTOPLAY_QUEUE
+  // picks at a time.
   private autoplayHasRoom() {
+    const picks = this.queue.filter((track) => track.automatic).length;
     return (
-      !this.queue.length &&
-      Number(Boolean(this.current)) < this.config.queueLimit
+      this.queue.length === picks &&
+      picks < (this.config.autoplayQueue ?? 1) &&
+      this.queue.length + Number(Boolean(this.current)) < this.config.queueLimit
     );
   }
 
@@ -6823,7 +6859,7 @@ export class Coordinator {
               ];
               return [
                 section(
-                  `*${index + 1}. ${escape(track.title)}* — ${escape(track.artist)}\n${track.live ? "🔴 LIVE · " : ""}${track.playedFrom ? "via SoundCloud · " : ""}${addedBy(track)}`,
+                  `*${index + 1}. ${escape(track.title)}* — ${escape(track.artist)}\n${track.live ? "🔴 LIVE · " : ""}${trackSource(track) ? `${trackSource(track)} · ` : ""}${addedBy(track)}`,
                   `queue_item_${track.id}`,
                 ),
                 ...when(
@@ -8512,7 +8548,7 @@ export class Coordinator {
         title: plain(current ? displayTitle(current) : "Nothing playing"),
         subtitle: plain(
           current
-            ? `${current.automatic ? "Autoplay · " : ""}${current.album ? `${current.album} · ` : ""}${current.artist}${current.playedFrom ? " · via SoundCloud" : ""}`
+            ? `${current.automatic ? "Autoplay · " : ""}${current.album ? `${current.album} · ` : ""}${current.artist}${trackSource(current) ? ` · ${trackSource(current)}` : ""}`
             : this.videoMode
               ? "Ready to watch"
               : "Ready for music",
@@ -8644,7 +8680,7 @@ export class Coordinator {
           next && current?.live
             ? "Up next: waiting on the live stream"
             : next
-              ? `${next.live ? "🔴 LIVE · " : ""}${next.status === "preparing" ? "Preparing · " : ""}${next.automatic ? "Autoplay · " : ""}${next.album ? `${next.album} · ` : ""}${next.artist}`
+              ? `${next.live ? "🔴 LIVE · " : ""}${next.status === "preparing" ? "Preparing · " : ""}${next.automatic ? "Autoplay · " : ""}${next.album ? `${next.album} · ` : ""}${next.artist}${trackSource(next) ? ` · ${trackSource(next)}` : ""}`
               : findingAutoplay
                 ? "Autoplay is picking a recommendation"
                 : this.videoMode
