@@ -23,6 +23,7 @@ function setup(
     pausedMs: number;
     warningMs: number;
     footer?: string;
+    huddleAccountId?: string;
   } = {
     aloneMs: 60_000,
     idleMs: 600_000,
@@ -3176,6 +3177,22 @@ test("announces and leaves two minutes after becoming the only Huddle participan
     "1.0",
     "I’m alone in the Huddle, so I’ll leave in 2 minutes.",
   ]);
+  await until(() =>
+    result.media.some((value) => (value as { type?: string }).type === "leave"),
+  );
+  expect(result.media).toContainEqual({ type: "leave" });
+});
+
+test("leaves when only the account that joined for it is left", async () => {
+  const result = setup(undefined, {
+    aloneMs: 10,
+    idleMs: 100,
+    pausedMs: 100,
+    warningMs: 20,
+    huddleAccountId: "host",
+  });
+  await result.coordinator.start();
+  await result.coordinator.memberLeft("guest");
   await until(() =>
     result.media.some((value) => (value as { type?: string }).type === "leave"),
   );

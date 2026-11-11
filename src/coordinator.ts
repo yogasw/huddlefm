@@ -588,6 +588,9 @@ export class Coordinator {
       autoplay?: AutoplayMode;
       autoplayQueue?: number;
       queueEndMention?: string;
+      // An account that joins Huddles for HuddleFM but posts nothing, which
+      // does not keep HuddleFM from being alone.
+      huddleAccountId?: string;
       queueEndMessage?: string;
       duckingMode: DuckingMode;
       aloneMs: number;
@@ -9474,7 +9477,9 @@ export class Coordinator {
   private refreshIdle() {
     if (this.inactive()) return;
     const alone = () =>
-      ![...this.participants].some((id) => id !== this.botUserId);
+      ![...this.participants].some(
+        (id) => id !== this.botUserId && id !== this.config.huddleAccountId,
+      );
     if (alone() && !this.aloneTimer) {
       this.warnLeaving(
         "alone",
