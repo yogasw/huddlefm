@@ -3199,6 +3199,26 @@ test("leaves when only the account that joined for it is left", async () => {
   expect(result.media).toContainEqual({ type: "leave" });
 });
 
+test("stays while the account it joined as listens on another device", async () => {
+  const result = setup(undefined, {
+    aloneMs: 10,
+    idleMs: 100,
+    pausedMs: 100,
+    warningMs: 20,
+    huddleAccountId: "host",
+  });
+  await result.coordinator.start();
+  result.coordinator.mediaEvent("attendee_users", { userIds: ["host"] });
+  await result.coordinator.memberLeft("guest");
+  await Bun.sleep(40);
+  expect(result.media).not.toContainEqual({ type: "leave" });
+  // The other device leaves, so nobody is left listening.
+  result.coordinator.mediaEvent("attendee_users", { userIds: [] });
+  await until(() =>
+    result.media.some((value) => (value as { type?: string }).type === "leave"),
+  );
+});
+
 test("reconciling participants removes a user whose leave event was missed", async () => {
   const result = setup(undefined, {
     aloneMs: 10,

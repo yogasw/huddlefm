@@ -21,6 +21,7 @@ export type TurnCredentials = {
 export type AudioStreamIdInfo = {
   audio_stream_id: number;
   attendee_id?: string;
+  external_user_id?: string;
   muted?: boolean;
   dropped?: boolean;
 };
