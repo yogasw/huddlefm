@@ -87,10 +87,16 @@ export type ChannelDefaults = {
   transitionMode?: TransitionMode;
   duckingMode?: DuckingMode;
   anchorEnabled?: boolean;
+  // Minutes the thread must stay quiet before the player moves down to its
+  // bottom; unset or 0 moves it right away.
+  anchorQuietMinutes?: number;
   progressBar?: boolean;
   communism?: boolean;
   permissions?: Capability[];
 };
+
+/** The quiet waits admins can pick before the player moves down. */
+export const anchorQuietChoices = [0, 1, 2, 5, 10] as const;
 
 // Keeps only the fields that still hold a valid value, so a row saved by an
 // older or newer version cannot put a session into an unknown state.
@@ -115,6 +121,12 @@ export function parseChannelDefaults(
   if (duckingMode) defaults.duckingMode = duckingMode;
   if (typeof saved.anchorEnabled === "boolean")
     defaults.anchorEnabled = saved.anchorEnabled;
+  if (
+    anchorQuietChoices.includes(
+      saved.anchorQuietMinutes as (typeof anchorQuietChoices)[number],
+    )
+  )
+    defaults.anchorQuietMinutes = saved.anchorQuietMinutes as number;
   if (typeof saved.progressBar === "boolean")
     defaults.progressBar = saved.progressBar;
   if (typeof saved.communism === "boolean")

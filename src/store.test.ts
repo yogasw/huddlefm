@@ -1341,12 +1341,18 @@ test("channel defaults keep only settings that are still valid", () => {
   expect(store.channelDefaults("C1")).toBeUndefined();
   store.setChannelDefaults(
     "C1",
-    { volume: 0.4, autoplay: "huddle", permissions: ["add", "skip"] },
+    {
+      volume: 0.4,
+      autoplay: "huddle",
+      anchorQuietMinutes: 2,
+      permissions: ["add", "skip"],
+    },
     "U1",
   );
   expect(store.channelDefaults("C1")).toEqual({
     volume: 0.4,
     autoplay: "huddle",
+    anchorQuietMinutes: 2,
     permissions: ["add", "skip"],
   });
   store.db
@@ -1357,6 +1363,7 @@ test("channel defaults keep only settings that are still valid", () => {
         autoplay: "radio",
         loopMode: "queue",
         anchorEnabled: "yes",
+        anchorQuietMinutes: 7,
         permissions: ["skip", "fly"],
       }),
       "C1",

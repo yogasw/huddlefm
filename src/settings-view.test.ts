@@ -561,12 +561,20 @@ test("switches what every channel's new sessions start with", () => {
       bot: {
         admins: [],
         youtube: { signedIn: false, invalid: false },
-        everyChannel: { anchor: true, everyoneHost: false },
+        everyChannel: {
+          anchor: true,
+          anchorQuietMinutes: 2,
+          everyoneHost: false,
+        },
       },
     }),
   );
   const text = JSON.stringify(view.blocks);
   expect(text).toContain("✅ Keep the player at the bottom of the thread");
+  expect(text).toContain(
+    '"initial_option":{"text":{"type":"plain_text","text":"After 2 quiet minutes"},"value":"anchorQuiet:2"}',
+  );
+  expect(text).toContain('"value":"anchorQuiet:0"');
   expect(text).toContain('"value":"anchor:off"');
   expect(text).toContain("⬜ Everyone in the huddle is host");
   expect(text).toContain('"value":"everyone:on"');
