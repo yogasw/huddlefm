@@ -20,6 +20,7 @@ import {
   type MediaMode,
   permissionPresets,
   everyChannel,
+  anchorQuietChoices,
   recentTrackLimit,
   scrobblingModes,
   Store,
@@ -1425,10 +1426,14 @@ export class Coordinator {
       !this.anchorEnabled
     )
       return;
+    // Each new message restarts the wait, so the player moves down only once
+    // the thread has been quiet for as long as admins chose.
+    const minutes =
+      this.store.channelDefaults(everyChannel)?.anchorQuietMinutes ?? 0;
     clearTimeout(this.anchorTimer);
     this.anchorTimer = setTimeout(
       () => void this.enqueue(() => this.reanchor()),
-      5_000,
+      minutes ? minutes * 60_000 : 5_000,
     );
   }
 
@@ -7250,6 +7255,9 @@ export class Coordinator {
                 anchor:
                   this.store.channelDefaults(everyChannel)?.anchorEnabled ===
                   true,
+                anchorQuietMinutes:
+                  this.store.channelDefaults(everyChannel)
+                    ?.anchorQuietMinutes ?? 0,
                 everyoneHost:
                   this.store.channelDefaults(everyChannel)?.communism === true,
               },
@@ -8069,14 +8077,22 @@ export class Coordinator {
     const [setting, value] = (interaction.value ?? "").split(":");
     const on = value === "on";
     const saved = this.store.channelDefaults(everyChannel) ?? {};
+    const minutes = Number(value);
     if (setting === "anchor") saved.anchorEnabled = on;
+    else if (
+      setting === "anchorQuiet" &&
+      anchorQuietChoices.includes(
+        minutes as (typeof anchorQuietChoices)[number],
+      )
+    )
+      saved.anchorQuietMinutes = minutes;
     // Everyone as host is communism mode, from the session's start.
     else if (setting === "everyone") saved.communism = on;
     else return;
     this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
     this.audit.record("every_channel.updated", interaction.userId, {
       setting,
-      on,
+      ...(setting === "anchorQuiet" ? { minutes } : { on }),
     });
     // The session it was switched from takes it at once, as far as it can:
     // communism mode, once on, lasts until the session ends.

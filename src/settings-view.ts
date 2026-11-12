@@ -27,7 +27,11 @@ import {
   type UserSettingsView,
 } from "./settings-schema.ts";
 import type { Interaction } from "./slack-app.ts";
-import { huddleMixSources, type HuddleMixSource } from "./store.ts";
+import {
+  anchorQuietChoices,
+  huddleMixSources,
+  type HuddleMixSource,
+} from "./store.ts";
 
 export {
   scrobbleServices,
@@ -321,7 +325,11 @@ export type SettingsViewOptions = {
       checkedAt?: number;
     };
     // What admins set for every channel's new sessions.
-    everyChannel?: { anchor: boolean; everyoneHost: boolean };
+    everyChannel?: {
+      anchor: boolean;
+      anchorQuietMinutes: number;
+      everyoneHost: boolean;
+    };
   };
   session: SessionSettingsView;
   user: UserSettingsView;
@@ -863,8 +871,16 @@ export function youtubeStatus(
   return `⏳ *${youtube.signedIn ? `Signed in${since}` : "Not signed in"}.* YouTube has not been checked yet.`;
 }
 
+function anchorQuietLabel(minutes: number) {
+  return minutes
+    ? `After ${minutes} quiet minute${minutes === 1 ? "" : "s"}`
+    : "Right away";
+}
+
 function everyChannelBlocks(
-  every: { anchor: boolean; everyoneHost: boolean } | undefined,
+  every:
+    | { anchor: boolean; anchorQuietMinutes: number; everyoneHost: boolean }
+    | undefined,
 ) {
   if (!every) return [];
   const toggle = (
@@ -888,6 +904,26 @@ function everyChannelBlocks(
       every.anchor,
       "every_channel_anchor",
     ),
+    {
+      type: "section",
+      block_id: "every_channel_anchor_quiet",
+      text: {
+        type: "mrkdwn",
+        text: "Move the player down",
+      },
+      accessory: {
+        type: "static_select",
+        action_id: everyChannelAction,
+        options: anchorQuietChoices.map((minutes) => ({
+          text: plain(anchorQuietLabel(minutes)),
+          value: `anchorQuiet:${minutes}`,
+        })),
+        initial_option: {
+          text: plain(anchorQuietLabel(every.anchorQuietMinutes)),
+          value: `anchorQuiet:${every.anchorQuietMinutes}`,
+        },
+      },
+    },
     toggle(
       "everyone",
       "Everyone in the huddle is host (communism mode)",
@@ -896,7 +932,7 @@ function everyChannelBlocks(
     ),
     context(
       "every_channel_hint",
-      "For this session and new ones. A channel's own saved defaults still win for its new sessions.",
+      "For this session and new ones. A channel's own saved defaults still win for its new sessions. Waiting for quiet minutes keeps the player from jumping between people's messages while they talk.",
     ),
   ];
 }
