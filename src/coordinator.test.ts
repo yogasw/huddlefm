@@ -19,6 +19,7 @@ function setup(
   tracks = {} as TrackCatalog,
   timeouts: {
     aloneMs: number;
+    aloneGraceMs?: number;
     idleMs: number;
     pausedMs: number;
     warningMs: number;
@@ -3260,6 +3261,38 @@ test("stays while the account it joined as listens on another device", async () 
   expect(result.media).not.toContainEqual({ type: "leave" });
   // The other device leaves, so nobody is left listening.
   result.coordinator.mediaEvent("attendee_users", { userIds: [] });
+  await until(() =>
+    result.media.some((value) => (value as { type?: string }).type === "leave"),
+  );
+});
+
+test("waits out a short gap in presence before warning it is alone", async () => {
+  const result = setup(undefined, {
+    aloneMs: 10,
+    aloneGraceMs: 40,
+    idleMs: 1_000,
+    pausedMs: 1_000,
+    warningMs: 20,
+    huddleAccountId: "host",
+  });
+  await result.coordinator.start();
+  result.coordinator.mediaEvent("attendee_users", { userIds: ["host"] });
+  await result.coordinator.memberLeft("guest");
+  // A reconnect drops the other device for a moment, then sees it again.
+  result.coordinator.mediaEvent("attendee_users", { userIds: [] });
+  await Bun.sleep(20);
+  result.coordinator.mediaEvent("attendee_users", { userIds: ["host"] });
+  await Bun.sleep(60);
+  expect(result.posted).toHaveLength(1);
+  expect(result.media).not.toContainEqual({ type: "leave" });
+  // Gone for longer than the grace, it warns and leaves.
+  result.coordinator.mediaEvent("attendee_users", { userIds: [] });
+  await until(() => result.posted.length === 2);
+  expect(result.posted[1]).toEqual([
+    "channel",
+    "1.0",
+    "I’m alone in the Huddle, so I’ll leave in 2 minutes.",
+  ]);
   await until(() =>
     result.media.some((value) => (value as { type?: string }).type === "leave"),
   );

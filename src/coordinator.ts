@@ -525,6 +525,9 @@ export class Coordinator {
   private idleTimer?: ReturnType<typeof setTimeout>;
   private idleWarningTimer?: ReturnType<typeof setTimeout>;
   private aloneTimer?: ReturnType<typeof setTimeout>;
+  // Waits out short gaps in who is present before the alone warning.
+  private aloneGraceTimer?: ReturnType<typeof setTimeout>;
+  private aloneSettled = false;
   private pausedTimer?: ReturnType<typeof setTimeout>;
   private pausedWarningTimer?: ReturnType<typeof setTimeout>;
   private renderTimer?: ReturnType<typeof setTimeout>;
@@ -601,6 +604,9 @@ export class Coordinator {
       queueEndMessage?: string;
       duckingMode: DuckingMode;
       aloneMs: number;
+      // How long HuddleFM must stay alone before it warns. Presence briefly
+      // drops while it restarts or reconnects, before everyone is seen again.
+      aloneGraceMs?: number;
       idleMs: number;
       pausedMs: number;
       warningMs: number;
@@ -9574,7 +9580,18 @@ export class Coordinator {
           // another device.
           (id !== this.config.huddleAccountId || this.attendeeUsers.has(id)),
       );
-    if (alone() && !this.aloneTimer) {
+    const graceMs = this.config.aloneGraceMs ?? 0;
+    if (alone() && !this.aloneTimer && graceMs && !this.aloneSettled) {
+      this.aloneGraceTimer ??= setTimeout(
+        () =>
+          void this.enqueue(async () => {
+            this.aloneGraceTimer = undefined;
+            this.aloneSettled = true;
+            this.refreshIdle();
+          }),
+        graceMs,
+      );
+    } else if (alone() && !this.aloneTimer) {
       this.warnLeaving(
         "alone",
         "I’m alone in the Huddle, so I’ll leave in 2 minutes.",
@@ -9594,6 +9611,9 @@ export class Coordinator {
     } else if (!alone()) {
       clearTimeout(this.aloneTimer);
       this.aloneTimer = undefined;
+      clearTimeout(this.aloneGraceTimer);
+      this.aloneGraceTimer = undefined;
+      this.aloneSettled = false;
     }
     this.holdLeaveTimer(
       "idle",
@@ -9673,6 +9693,7 @@ export class Coordinator {
       this.idleTimer,
       this.idleWarningTimer,
       this.aloneTimer,
+      this.aloneGraceTimer,
       this.pausedTimer,
       this.pausedWarningTimer,
       this.anchorTimer,

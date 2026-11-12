@@ -800,7 +800,11 @@ async function joinHuddle(
       audit,
       // In bot user mode the account HuddleFM joins as is someone's own, and
       // counts as a listener only while it is in the Huddle on another device.
-      { ...config, huddleAccountId: config.xoxb ? botUserId : undefined },
+      {
+        ...config,
+        huddleAccountId: config.xoxb ? botUserId : undefined,
+        aloneGraceMs: 60_000,
+      },
       bootstrap.bridgeToken,
       (message) => void runtime?.media.send(message),
       async () => {
