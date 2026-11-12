@@ -340,6 +340,9 @@ export function escape(text: string) {
     .replaceAll(">", "&gt;");
 }
 
+/** What an agent is told when the last song in a queue starts. */
+export const lastSongMessage = "The last song in the queue is playing.";
+
 /**
  * What an agent is told when a queue runs out: the message, with `{recent}`
  * as the last songs played, after a mention of the agent.

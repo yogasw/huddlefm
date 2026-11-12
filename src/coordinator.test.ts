@@ -1904,7 +1904,7 @@ test("late media events cannot advance a newer track", async () => {
   await result.coordinator.endFromSlack();
 });
 
-test("mentions the agent once the last song ends", async () => {
+test("mentions the agent when the last song starts and again when the queue ends", async () => {
   const tracks = {
     resolve: async (value: string) => ({
       sourceInput: `https://example.com/${value}`,
@@ -1935,17 +1935,22 @@ test("mentions the agent once the last song ends", async () => {
     metadata: "",
     state: {},
   });
+  const mentions = (text: string) =>
+    result.posted.filter((post) =>
+      String((post as unknown[])[2]).startsWith(`<@U01TESTAGENT> ${text}`),
+    );
+  // First while the last song plays, so more can be added without a gap.
+  await until(
+    () => mentions("The last song in the queue is playing.").length === 1,
+  );
+  expect(mentions("The queue has ended.")).toHaveLength(0);
   const play = result.media.find(
     (message) => (message as { type?: string }).type === "play",
   ) as { entryId: string };
+  // Then again once nothing is playing.
   await result.coordinator.mediaEvent("track_ended", { entryId: play.entryId });
-  await until(() =>
-    result.posted.some((post) =>
-      String((post as unknown[])[2]).startsWith(
-        "<@U01TESTAGENT> The queue has ended.",
-      ),
-    ),
-  );
+  await until(() => mentions("The queue has ended.").length === 1);
+  expect(mentions("The last song in the queue is playing.")).toHaveLength(1);
   await result.coordinator.endFromSlack();
 });
 
