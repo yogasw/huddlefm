@@ -357,3 +357,37 @@ test("posts under another Slack user's name and picture first", async () => {
     icon_url: "https://example.com/dj.png",
   });
 });
+
+test("speaks as the user it posts under, in messages and dialogs", async () => {
+  const adapter = new SlackAppAdapter({
+    xapp: "xapp-1",
+    xoxb: "xoxb-1",
+    displayName: "DJ",
+  });
+  const sent: Record<string, unknown>[] = [];
+  const chat = {
+    postMessage: async (body: Record<string, unknown>) => {
+      sent.push(body);
+      return { ts: "1.0" };
+    },
+  };
+  Reflect.set(adapter, "web", { chat });
+  Reflect.set(adapter, "interactive", {
+    views: {
+      open: async (body: Record<string, unknown>) => {
+        sent.push(body);
+        return { view: { id: "V1" } };
+      },
+    },
+  });
+  await adapter.post("C01TESTCHAN", undefined, "HuddleFM is restarting", [
+    { type: "section", text: { type: "mrkdwn", text: "HuddleFM player" } },
+  ]);
+  await adapter.modal("trigger", {
+    type: "modal",
+    title: { type: "plain_text", text: "HuddleFM queue" },
+  });
+  expect(JSON.stringify(sent)).not.toContain("HuddleFM");
+  expect(sent[0]).toMatchObject({ text: "DJ is restarting" });
+  expect(JSON.stringify(sent[1])).toContain("DJ queue");
+});

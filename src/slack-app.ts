@@ -276,6 +276,20 @@ export class SlackAppAdapter {
     this.as = postedAs(config.displayName, config.displayIcon);
   }
 
+  /**
+   * What goes out to Slack with "HuddleFM" written as the name it posts
+   * under, so messages and dialogs speak as that user too.
+   */
+  private branded<T>(value: T): T {
+    const name = this.as.username;
+    if (!name || name === "HuddleFM" || value === undefined) return value;
+    const json = JSON.stringify(value);
+    if (!json.includes("HuddleFM")) return value;
+    return JSON.parse(
+      json.replaceAll("HuddleFM", JSON.stringify(name).slice(1, -1)),
+    ) as T;
+  }
+
   async react(channelId: string, messageTs: string, name: string) {
     await this.web.reactions
       .add({ channel: channelId, timestamp: messageTs, name })
@@ -393,8 +407,8 @@ export class SlackAppAdapter {
     const result = await this.web.chat.postMessage({
       channel,
       thread_ts: threadTs || undefined,
-      text,
-      blocks: blocks as never,
+      text: this.branded(text),
+      blocks: this.branded(blocks) as never,
       ...noUnfurls,
       ...this.as,
     });
@@ -423,8 +437,8 @@ export class SlackAppAdapter {
     await (options.interactive ? this.interactive : this.web).chat.update({
       channel,
       ts,
-      text,
-      blocks: blocks as never,
+      text: this.branded(text),
+      blocks: this.branded(blocks) as never,
       // Not in chat.update's documented arguments, but an edit is unfurled
       // like a new message, so it carries them too.
       ...(noUnfurls as object),
@@ -493,9 +507,9 @@ export class SlackAppAdapter {
     await this.interactive.chat.postEphemeral({
       channel,
       user,
-      text,
+      text: this.branded(text),
       thread_ts: threadTs || undefined,
-      blocks: blocks as never,
+      blocks: this.branded(blocks) as never,
       ...this.as,
     });
     log.debug(
@@ -507,7 +521,7 @@ export class SlackAppAdapter {
   async modal(triggerId: string, view: unknown) {
     const result = await this.interactive.views.open({
       trigger_id: triggerId,
-      view: view as never,
+      view: this.branded(view) as never,
     });
     log.debug(
       { event: "modal_opened", viewId: result.view?.id },
@@ -519,7 +533,7 @@ export class SlackAppAdapter {
   async pushModal(triggerId: string, view: unknown) {
     const result = await this.interactive.views.push({
       trigger_id: triggerId,
-      view: view as never,
+      view: this.branded(view) as never,
     });
     log.debug({ event: "modal_pushed" }, "Slack modal pushed");
     return result.view;
@@ -545,7 +559,7 @@ export class SlackAppAdapter {
     return this.interactive.views.update({
       view_id: viewId,
       ...(hash ? { hash } : {}),
-      view: view as never,
+      view: this.branded(view) as never,
     });
   }
 
@@ -651,9 +665,9 @@ export class SlackAppAdapter {
     if (!channelId) throw new Error("conversations.open returned no channel");
     const result = await this.web.chat.postMessage({
       channel: channelId,
-      text,
+      text: this.branded(text),
       thread_ts: options?.threadTs,
-      blocks: options?.blocks as never,
+      blocks: this.branded(options?.blocks) as never,
       ...this.as,
     });
     log.debug(
@@ -671,7 +685,11 @@ export class SlackAppAdapter {
   async replaceOriginal(responseUrl: string, text: string, blocks?: unknown[]) {
     await this.respond(
       responseUrl,
-      { replace_original: true, text, ...(blocks ? { blocks } : {}) },
+      this.branded({
+        replace_original: true,
+        text,
+        ...(blocks ? { blocks } : {}),
+      }),
       "replace",
     );
     log.debug(
