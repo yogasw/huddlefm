@@ -29,6 +29,16 @@ import {
 import { ScrobbleDispatcher } from "./scrobbling.ts";
 import { SlackAppAdapter, type Interaction } from "./slack-app.ts";
 import { uploadYouTubeCookiesAction } from "./settings-view.ts";
+import {
+  deliverWebhook,
+  editWebhookAction,
+  parseWebhookForm,
+  removeWebhookAction,
+  testWebhookAction,
+  webhookCallback,
+  webhookHost,
+  webhookModal,
+} from "./webhook.ts";
 import { mcpResponse } from "./mcp.ts";
 import {
   SlackHuddleAdapter,
@@ -1783,8 +1793,57 @@ async function youtubeCookies(interaction: Interaction) {
   await slackApp.dm(interaction.userId, reply);
 }
 
+// An admin's webhook, from the Admin tab: the form, a test and removal.
+async function webhookAdmin(interaction: Interaction) {
+  if (!config.adminUserIds.has(interaction.userId)) return;
+  const current = store.webhookSettings();
+  const tell = (text: string) => slackApp.dm(interaction.userId, text);
+  if (interaction.actionId === editWebhookAction)
+    return void (await slackApp.pushModal(
+      interaction.triggerId,
+      webhookModal(current),
+    ));
+  if (interaction.actionId === removeWebhookAction) {
+    store.clearWebhookSettings();
+    log.info({ event: "webhook_removed", userId: interaction.userId });
+    return void (await tell("The webhook was removed."));
+  }
+  if (interaction.actionId === testWebhookAction) {
+    if (!current) return void (await tell("There is no webhook to test."));
+    const result = await deliverWebhook(current, {
+      event: "webhook.test",
+      at: new Date().toISOString(),
+    });
+    return void (await tell(
+      result.ok
+        ? `:white_check_mark: ${webhookHost(current.url)} answered ${result.status}.`
+        : `:x: ${webhookHost(current.url)} did not accept the test${result.status ? ` (it answered ${result.status})` : " (no answer)"}, after ${result.attempts} tries.`,
+    ));
+  }
+  const form = parseWebhookForm(interaction.state, current);
+  if (!form.ok) return void (await tell(`:x: Not saved. ${form.error}`));
+  store.setWebhookSettings(form, interaction.userId);
+  log.info({
+    event: "webhook_saved",
+    userId: interaction.userId,
+    host: webhookHost(form.url),
+    events: form.events,
+    hasToken: Boolean(form.token),
+  });
+  await tell(
+    `:white_check_mark: Webhook saved for ${webhookHost(form.url)}: ${form.events.length ? form.events.join(", ") : "no events ticked, so nothing is sent yet"}.`,
+  );
+}
+
 slackApp.onAction = async (interaction) => {
   await started.promise;
+  if (
+    interaction.actionId === editWebhookAction ||
+    interaction.actionId === removeWebhookAction ||
+    interaction.actionId === testWebhookAction ||
+    interaction.actionId === webhookCallback
+  )
+    return webhookAdmin(interaction);
   if (
     interaction.actionId === uploadYouTubeCookiesAction ||
     interaction.actionId === youtubeCookiesCallback

@@ -100,6 +100,25 @@ export type ChannelDefaults = {
   permissions?: Capability[];
 };
 
+/** What the webhook can be told about. */
+export const webhookEvents = [
+  "huddle.joined",
+  "huddle.left",
+  "queue.low",
+  "queue.last",
+  "queue.ended",
+  "session.ended",
+] as const;
+export type WebhookEvent = (typeof webhookEvents)[number];
+
+export type WebhookSettings = {
+  url: string;
+  token: string;
+  events: WebhookEvent[];
+  updatedBy: string;
+  updatedAt: number;
+};
+
 /** The three moments the thread hears about the queue running down. */
 export const queueStages = ["low", "last", "ended"] as const;
 export type QueueStage = (typeof queueStages)[number];
@@ -937,6 +956,16 @@ export class Store {
       CREATE TABLE IF NOT EXISTS channel_defaults (
         channel_id TEXT PRIMARY KEY,
         settings TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      -- The one webhook an admin may set: where to send, the token sent as
+      -- a bearer, and which events go out.
+      CREATE TABLE IF NOT EXISTS webhook_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        url TEXT NOT NULL,
+        token TEXT NOT NULL DEFAULT '',
+        events TEXT NOT NULL DEFAULT '[]',
         updated_by TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -2385,6 +2414,62 @@ export class Store {
           updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
       )
       .run(channelId, JSON.stringify(defaults), userId, Date.now());
+  }
+
+  /** The webhook an admin set, if there is one. */
+  webhookSettings(): WebhookSettings | undefined {
+    const row = this.db
+      .query(
+        "SELECT url, token, events, updated_by, updated_at FROM webhook_settings WHERE id = 1",
+      )
+      .get() as {
+      url: string;
+      token: string;
+      events: string;
+      updated_by: string;
+      updated_at: number;
+    } | null;
+    if (!row) return undefined;
+    let events: unknown = [];
+    try {
+      events = JSON.parse(row.events);
+    } catch {
+      // An unreadable list sends nothing.
+    }
+    return {
+      url: row.url,
+      token: row.token,
+      events: webhookEvents.filter(
+        (event) => Array.isArray(events) && events.includes(event),
+      ),
+      updatedBy: row.updated_by,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  setWebhookSettings(
+    settings: { url: string; token: string; events: readonly WebhookEvent[] },
+    userId: string,
+  ) {
+    this.db
+      .query(
+        `INSERT INTO webhook_settings (id, url, token, events, updated_by, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET url = excluded.url, token = excluded.token,
+          events = excluded.events, updated_by = excluded.updated_by,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        settings.url,
+        settings.token,
+        JSON.stringify(settings.events),
+        userId,
+        Date.now(),
+      );
+  }
+
+  clearWebhookSettings() {
+    this.db.query("DELETE FROM webhook_settings WHERE id = 1").run();
   }
 
   clearChannelDefaults(channelId: string) {

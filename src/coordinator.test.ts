@@ -145,6 +145,7 @@ function setup(
       setEndMessage: () => {},
       sessionSaves: () => [],
       channelDefaults: () => undefined,
+      webhookSettings: () => undefined,
       channelDefaultsSaved: () => undefined,
       channelAutoJoin: () => undefined,
       setChannelAutoJoin: () => {},
@@ -2066,6 +2067,168 @@ test("a stage that is switched off says nothing", async () => {
     "U01TESTAGENT",
   );
   expect(texts.some((text) => text.includes("<@U01TESTAGENT>"))).toBeFalse();
+});
+
+// Runs a queue to its end with a webhook listening for the given events,
+// returning what it was sent.
+async function playWithWebhook(events: string[], songs: string[]) {
+  const store = new Store(":memory:");
+  store.setWebhookSettings(
+    {
+      url: "https://hooks.example.com/a",
+      token: "test-token",
+      events: events as never,
+    },
+    "admin",
+  );
+  const sent: { url: string; auth: string; body: any }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: any) => {
+    sent.push({
+      url,
+      auth: init.headers.authorization,
+      body: JSON.parse(init.body),
+    });
+    return { status: 200 };
+  }) as never;
+  try {
+    const result = setup(
+      queueTracks,
+      {
+        aloneMs: 60_000,
+        idleMs: 600_000,
+        pausedMs: 600_000,
+        warningMs: 120_000,
+      },
+      undefined,
+      undefined,
+      store,
+    );
+    await result.coordinator.start();
+    for (const value of songs)
+      await result.coordinator.action({
+        type: "block_actions",
+        userId: "host",
+        actionId: "add_track_to_queue",
+        value,
+        channelId: "channel",
+        messageTs: "1",
+        triggerId: "",
+        metadata: "",
+        state: {},
+      });
+    const played = new Set<string>();
+    for (let index = 0; index < songs.length; index++) {
+      await until(() =>
+        result.media.some(
+          (message) =>
+            (message as { type?: string }).type === "play" &&
+            !played.has((message as { entryId: string }).entryId),
+        ),
+      );
+      const play = result.media.find(
+        (message) =>
+          (message as { type?: string }).type === "play" &&
+          !played.has((message as { entryId: string }).entryId),
+      ) as { entryId: string };
+      played.add(play.entryId);
+      await result.coordinator.mediaEvent("track_ended", {
+        entryId: play.entryId,
+      });
+    }
+    await result.coordinator.endFromSlack();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  return sent;
+}
+
+test("the webhook hears only the events it ticked, with the song and queue", async () => {
+  const sent = await playWithWebhook(
+    ["huddle.joined", "queue.last", "queue.ended", "huddle.left"],
+    ["a", "b"],
+  );
+  const names = sent.map((call) => call.body.event);
+  expect(names[0]).toBe("huddle.joined");
+  expect(names).toContain("queue.last");
+  expect(names).toContain("queue.ended");
+  expect(names.at(-1)).toBe("huddle.left");
+  expect(names).not.toContain("queue.low");
+  expect(names).not.toContain("session.ended");
+  for (const call of sent) {
+    expect(call.url).toBe("https://hooks.example.com/a");
+    expect(call.auth).toBe("Bearer test-token");
+    expect(call.body.channelId).toBe("channel");
+    expect(call.body.sessionId).toBeString();
+    expect(Date.parse(call.body.at)).toBeGreaterThan(0);
+  }
+  // The first song also played alone while the second was being added.
+  const last = sent.findLast((call) => call.body.event === "queue.last")!.body;
+  expect(last.current).toEqual({ title: "b", artist: "Artist" });
+  expect(last.queueLength).toBe(0);
+  expect(last.recent).toEqual([{ title: "a", artist: "Artist" }]);
+  expect(sent.at(-1)!.body.reason).toBe("huddle ended");
+});
+
+test("the webhook hears the running-low point and a bot leaving by itself", async () => {
+  const sent = await playWithWebhook(["queue.low"], ["a", "b", "c"]);
+  expect(sent.map((call) => call.body.event)).toEqual(["queue.low"]);
+  expect(sent[0]!.body.queueLength).toBe(1);
+});
+
+test("a webhook with nothing ticked or nothing saved sends nothing", async () => {
+  expect(await playWithWebhook([], ["a"])).toEqual([]);
+});
+
+test("someone ending the session is told apart from the bot leaving", async () => {
+  const store = new Store(":memory:");
+  store.setWebhookSettings(
+    {
+      url: "https://hooks.example.com/a",
+      token: "",
+      events: ["huddle.left", "session.ended"],
+    },
+    "admin",
+  );
+  const run = async (reason: string) => {
+    const sent: any[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: any) => {
+      sent.push(JSON.parse(init.body));
+      return { status: 200 };
+    }) as never;
+    try {
+      const result = setup(
+        queueTracks,
+        {
+          aloneMs: 60_000,
+          idleMs: 600_000,
+          pausedMs: 600_000,
+          warningMs: 120_000,
+        },
+        undefined,
+        undefined,
+        store,
+      );
+      await result.coordinator.start();
+      await Reflect.apply(
+        Reflect.get(result.coordinator, "end"),
+        result.coordinator,
+        [undefined, reason],
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    return sent.map((body) => [body.event, body.reason]);
+  };
+  expect(await run("ended by agent")).toEqual([
+    ["session.ended", "ended by agent"],
+  ]);
+  expect(await run("alone timeout")).toEqual([
+    ["huddle.left", "alone timeout"],
+  ]);
 });
 
 test("queue message stages change one setting at a time from the Admin menu", () => {

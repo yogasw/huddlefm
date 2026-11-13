@@ -1376,6 +1376,47 @@ test("queue message settings keep valid stages and fill in the defaults", () => 
   store.close();
 });
 
+test("the webhook is saved as one row with only the events it knows", () => {
+  const store = new Store(":memory:");
+  expect(store.webhookSettings()).toBeUndefined();
+  store.setWebhookSettings(
+    {
+      url: "https://hooks.example.com/a",
+      token: "test-token",
+      events: ["queue.last", "session.ended"],
+    },
+    "U1",
+  );
+  expect(store.webhookSettings()).toMatchObject({
+    url: "https://hooks.example.com/a",
+    token: "test-token",
+    events: ["queue.last", "session.ended"],
+    updatedBy: "U1",
+  });
+  store.setWebhookSettings(
+    { url: "https://hooks.example.com/b", token: "", events: [] },
+    "U2",
+  );
+  expect(store.webhookSettings()).toMatchObject({
+    url: "https://hooks.example.com/b",
+    token: "",
+    events: [],
+    updatedBy: "U2",
+  });
+  store.db
+    .query("UPDATE webhook_settings SET events = ? WHERE id = 1")
+    .run(JSON.stringify(["queue.ended", "bogus", "huddle.joined"]));
+  expect(store.webhookSettings()?.events).toEqual([
+    "huddle.joined",
+    "queue.ended",
+  ]);
+  store.db.query("UPDATE webhook_settings SET events = '{' WHERE id = 1").run();
+  expect(store.webhookSettings()?.events).toEqual([]);
+  store.clearWebhookSettings();
+  expect(store.webhookSettings()).toBeUndefined();
+  store.close();
+});
+
 test("channel defaults keep only settings that are still valid", () => {
   const store = new Store(":memory:");
   expect(store.channelDefaults("C1")).toBeUndefined();

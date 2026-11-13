@@ -555,6 +555,48 @@ test("marks whether YouTube plays with the cookies", () => {
   expect(youtubeStatus({ signedIn: false, invalid: false })).toStartWith("⏳");
 });
 
+test("the Admin tab shows the webhook without its token", () => {
+  const admin = (webhook: any) =>
+    JSON.stringify(
+      settingsView(
+        options({
+          tab: "admin",
+          access: { ...access, botAdmin: true },
+          bot: {
+            admins: [],
+            youtube: { signedIn: false, invalid: false },
+            webhook,
+          },
+        }),
+      ).blocks,
+    );
+  const off = admin({ hasToken: false, events: [] });
+  expect(off).toContain("*Off.*");
+  expect(off).toContain('"action_id":"edit_webhook"');
+  expect(off).not.toContain("test_webhook");
+  const on = admin({
+    url: "https://hooks.example.com/secret/path?key=1",
+    hasToken: true,
+    events: ["queue.last", "session.ended"],
+    updatedBy: "U01TESTADMIN",
+    updatedAt: 1_700_000_000,
+  });
+  expect(on).toContain("hooks.example.com");
+  expect(on).not.toContain("secret/path");
+  expect(on).toContain("🔐 token saved");
+  expect(on).toContain("The last song in the queue started");
+  expect(on).toContain("Someone ended the session");
+  expect(on).toContain('"action_id":"test_webhook"');
+  expect(on).toContain('"action_id":"remove_webhook"');
+  expect(
+    admin({
+      url: "https://hooks.example.com/a",
+      hasToken: false,
+      events: [],
+    }),
+  ).toContain("No events are ticked");
+});
+
 test("switches what every channel's new sessions start with", () => {
   const view = settingsView(
     options({

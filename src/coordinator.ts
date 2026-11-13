@@ -25,6 +25,7 @@ import {
   queueMessageSettings,
   queueStages,
   type QueueStage,
+  type WebhookEvent,
   recentTrackLimit,
   scrobblingModes,
   Store,
@@ -111,6 +112,7 @@ import {
   truncate,
   when,
 } from "./coordinator-ui.ts";
+import { deliverWebhook, endEvent, webhookHost } from "./webhook.ts";
 import {
   eventGroup,
   integrationEventMessage,
@@ -832,6 +834,7 @@ export class Coordinator {
       huddleId: this.room.huddleId,
       channelId: this.room.uiChannelId,
     });
+    this.webhookEmit("huddle.joined");
     this.refreshIdle();
     this.sessionChanged();
     this.log.info(
@@ -4302,19 +4305,59 @@ export class Coordinator {
     }
   }
 
+  // Tells the admin's webhook about an event, if it listens for that one. It
+  // goes out in the background and a failure is only logged, so the music
+  // never waits on it.
+  private webhookEmit(
+    event: WebhookEvent,
+    extra: Record<string, unknown> = {},
+  ) {
+    const settings = this.store.webhookSettings();
+    if (!settings || !settings.events.includes(event)) return;
+    const song = (track: { title: string; artist?: string }) => ({
+      title: track.title,
+      ...(track.artist ? { artist: track.artist } : {}),
+    });
+    const body = {
+      event,
+      at: new Date().toISOString(),
+      sessionId: this.id,
+      huddleId: this.room.huddleId,
+      channelId: this.room.uiChannelId,
+      threadTs: this.room.uiThreadTs,
+      current: this.current ? song(this.current) : null,
+      queueLength: this.queue.length,
+      recent: this.history.slice(-5).map(song),
+      ...extra,
+    };
+    void deliverWebhook(settings, body).then((result) =>
+      this.log[result.ok ? "info" : "warn"](
+        {
+          event: result.ok ? "webhook_sent" : "webhook_failed",
+          webhookEvent: event,
+          host: webhookHost(settings.url),
+          status: result.status,
+          attempts: result.attempts,
+        },
+        result.ok ? "Sent a webhook" : "Could not send a webhook",
+      ),
+    );
+  }
+
   // The running-low notice goes out once as the queue falls to the chosen
   // number of songs, and again only after it has been filled past that.
   private lowQueueCheck() {
     const { enabled, left } = queueMessageSettings(
       this.store.channelDefaults(everyChannel),
     ).low;
-    if (!enabled || this.queue.length > left) {
-      if (this.queue.length > left) this.lowQueueAnnounced = false;
+    if (this.queue.length > left) {
+      this.lowQueueAnnounced = false;
       return;
     }
     if (!this.queue.length || this.lowQueueAnnounced) return;
     this.lowQueueAnnounced = true;
-    void this.announceQueueEnd("low");
+    this.webhookEmit("queue.low");
+    if (enabled) void this.announceQueueEnd("low");
   }
 
   private listenerIds() {
@@ -5485,7 +5528,10 @@ export class Coordinator {
       await this.render();
       this.sessionChanged();
       this.log.info({ event: "queue_idle" }, "No playable track in queue");
-      if (ended) void this.announceQueueEnd("ended");
+      if (ended) {
+        void this.announceQueueEnd("ended");
+        this.webhookEmit("queue.ended");
+      }
       return this.refreshIdle();
     }
     this.queueEndAnnounced = false;
@@ -5540,8 +5586,10 @@ export class Coordinator {
       },
       "Track started",
     );
-    if (!this.queue.length) void this.announceQueueEnd("last");
-    else this.lowQueueCheck();
+    if (!this.queue.length) {
+      void this.announceQueueEnd("last");
+      this.webhookEmit("queue.last");
+    } else this.lowQueueCheck();
     this.startScrobbling(next, 0);
     await this.markWatched(next);
     this.noteSessionRecommendations();
@@ -7310,6 +7358,16 @@ export class Coordinator {
                   this.store.channelDefaults(everyChannel),
                 ),
               },
+              webhook: (() => {
+                const webhook = this.store.webhookSettings();
+                return {
+                  url: webhook?.url,
+                  hasToken: Boolean(webhook?.token),
+                  events: webhook?.events ?? [],
+                  updatedBy: webhook?.updatedBy,
+                  updatedAt: webhook?.updatedAt,
+                };
+              })(),
             },
           }
         : {}),
@@ -9866,6 +9924,7 @@ export class Coordinator {
       listenedSeconds: this.listenedSeconds,
     });
     this.dropIntegrations("session.ended");
+    this.webhookEmit(endEvent(reason), { reason });
     this.sessionChanged();
     this.sendMedia({ type: "leave" });
     // An update to the player still on its way would land after the recap.
@@ -9884,7 +9943,7 @@ export class Coordinator {
               "Could not delete ended player message",
             ),
           );
-        // Whoever ends a Everyone Is Host mode session, there is no host to have.
+        // Whoever ends an Everyone Is Host mode session, there is no host to have.
         const text = this.communism
           ? `Our session ended: ${reason === "ended by host" ? "ended by the people" : reason}`
           : `Session ended: ${reason}`;

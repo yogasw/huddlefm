@@ -35,7 +35,15 @@ import {
   type HuddleMixSource,
   type QueueStage,
   type queueMessageSettings,
+  type WebhookEvent,
 } from "./store.ts";
+import {
+  editWebhookAction,
+  removeWebhookAction,
+  testWebhookAction,
+  webhookEventLabels,
+  webhookHost,
+} from "./webhook.ts";
 
 export {
   scrobbleServices,
@@ -330,6 +338,14 @@ export type SettingsViewOptions = {
     };
     // What admins set for every channel's new sessions.
     everyChannel?: EveryChannelView;
+    // The webhook admins set, if any: the token is never part of this.
+    webhook?: {
+      url?: string;
+      hasToken: boolean;
+      events: WebhookEvent[];
+      updatedBy?: string;
+      updatedAt?: number;
+    };
   };
   session: SessionSettingsView;
   user: UserSettingsView;
@@ -1007,6 +1023,47 @@ function everyChannelBlocks(every: EveryChannelView | undefined) {
   ];
 }
 
+function webhookBlocks(
+  webhook: NonNullable<SettingsViewOptions["bot"]>["webhook"],
+) {
+  if (!webhook) return [];
+  const set = Boolean(webhook.url);
+  return [
+    { type: "header", text: plain("Webhook") },
+    {
+      type: "section",
+      block_id: "webhook_status",
+      text: {
+        type: "mrkdwn",
+        text: set
+          ? `*Sending to* \`${webhookHost(webhook.url!)}\` · ${webhook.hasToken ? "🔐 token saved" : "no token"}\n${
+              webhook.events.length
+                ? webhook.events
+                    .map((event) => `• ${webhookEventLabels[event]}`)
+                    .join("\n")
+                : "No events are ticked, so nothing is sent."
+            }${webhook.updatedBy ? `\nSet by <@${webhook.updatedBy}>${webhook.updatedAt ? ` ${slackDate(webhook.updatedAt)}` : ""}.` : ""}`
+          : "*Off.* Add an address to be told when the bot joins or leaves a huddle, when the queue runs low or out, and when a session ends.",
+      },
+      accessory: button(editWebhookAction, plain(set ? "Edit" : "Set up")),
+    },
+    ...(set
+      ? [
+          actions("webhook_actions", [
+            button(testWebhookAction, plain("Send a test")),
+            button(removeWebhookAction, plain("Remove"), {
+              confirm: confirm(
+                "Remove the webhook?",
+                "Nothing will be sent to it any more, and its token is deleted.",
+                "Remove",
+              ),
+            }),
+          ]),
+        ]
+      : []),
+  ];
+}
+
 function adminBlocks(options: SettingsViewOptions) {
   const bot = options.bot;
   if (!bot) return [];
@@ -1023,6 +1080,7 @@ function adminBlocks(options: SettingsViewOptions) {
       "Set by ADMIN_USER_IDS. Admins are hosts and channel managers everywhere.",
     ),
     ...everyChannelBlocks(bot.everyChannel),
+    ...webhookBlocks(bot.webhook),
     { type: "header", text: plain("YouTube cookies") },
     {
       type: "section",
