@@ -17,10 +17,15 @@ import { ContentShares, contentSuffix } from "./content-shares.ts";
 import { AttendeeUsers } from "./attendee-users.ts";
 import { DataChannel, dataTopic } from "./data-channel.ts";
 import { FfmpegDecoder, probeDuration, sampleRate } from "./decoder.ts";
+import { PeopleSignals } from "./people-signals.ts";
 import { SpeechSignals } from "./speech.ts";
 import type { LyricsCredits } from "./lyrics-view.ts";
 import type { DisplayMode } from "./video-card.ts";
-import { shareFormat } from "./video-format.ts";
+import {
+  peopleTemplates,
+  shareFormat,
+  type PeopleTemplate,
+} from "./video-format.ts";
 import { VideoThread, type IdleText } from "./video-thread.ts";
 
 type Level = "trace" | "debug" | "info" | "warn" | "error";
@@ -90,6 +95,25 @@ let lyrics:
   | undefined;
 let noLyrics: string | undefined;
 
+/** The coordinator's list of people, trimmed to what the worker can use. */
+function cleanPeople(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 40).flatMap((person) => {
+    const { id, name, image } = (person ?? {}) as Record<string, unknown>;
+    return typeof id === "string" && id
+      ? [
+          {
+            id,
+            name: typeof name === "string" ? name.slice(0, 80) : id,
+            ...(typeof image === "string" && image.length < 400_000
+              ? { image }
+              : {}),
+          },
+        ]
+      : [];
+  });
+}
+
 function entryKey(entryId: string) {
   let key = entryKeys.get(entryId);
   if (key === undefined) {
@@ -127,6 +151,7 @@ async function start(bootstrap: ChimeBootstrap) {
     shareFormat(bootstrap.video),
   );
   let speech: SpeechSignals | undefined;
+  let peopleSignals: PeopleSignals | undefined;
   const chime = new ChimeLink(
     bootstrap.meeting as unknown as ChimeMeeting,
     bootstrap.attendee as unknown as ChimeAttendee,
@@ -136,11 +161,13 @@ async function start(bootstrap: ChimeBootstrap) {
         log(level, event, message, fields),
       onSignaling: () => {
         speech?.reset();
+        peopleSignals?.reset();
         contentShares?.reset();
         attendeeUsers?.reset();
       },
       onFrame: (frame) => {
         speech?.handle(frame);
+        peopleSignals?.handle(frame);
         contentShares?.handle(frame);
         attendeeUsers?.handle(frame);
         dataChannel?.handle(frame);
@@ -162,6 +189,9 @@ async function start(bootstrap: ChimeBootstrap) {
   );
   link = chime;
   speech = new SpeechSignals(chime.attendeeId, audio.ducking, audio.applyDuck);
+  peopleSignals = new PeopleSignals(chime.attendeeId, ({ speaking, muted }) =>
+    card?.setPeopleState(speaking, muted),
+  );
   contentShares = new ContentShares(chime.attendeeId, (count) =>
     emit("content_shares", { count }),
   );
@@ -382,6 +412,18 @@ function handle(message: Record<string, any>) {
   }
   if (message.type === "progress_bar") {
     card?.setProgressBar(message.on !== false);
+    return;
+  }
+  if (message.type === "people_row") {
+    card?.setPeopleRow(
+      peopleTemplates.includes(message.template as PeopleTemplate)
+        ? (message.template as PeopleTemplate)
+        : "off",
+    );
+    return;
+  }
+  if (message.type === "people") {
+    card?.setPeople(cleanPeople(message.people));
     return;
   }
   if (message.type === "lyrics") {

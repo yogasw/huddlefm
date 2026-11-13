@@ -165,6 +165,8 @@ The Admin tab also has a row for each of the three queue notices: the last song 
 | `VIDEO_CACHE_LIMIT_BYTES`      | `5000000000` | Disk kept for prepared videos under `data/cache/video`, apart from the song cache; `0` disables and clears it |
 | `JELLYFIN_ENABLED`             | `true`       | Lets users link their own Jellyfin servers; `false` turns it off                                              |
 
+Channel managers can also show who is in the huddle over a playing video, from the Channel tab of Settings under **Participants on video**. It is hidden unless chosen, and is per channel: _Everyone in a row_ (up to eight photos, the rest counted as "+N", with speakers always shown), _Only who is speaking_ (a name and photo for up to three speakers), or _Everyone stacked close_. A green ring marks whoever is speaking and a red mark whoever is muted; photos are Slack profile photos, with initials where there is none.
+
 ## Runtime and logging
 
 | Variable         | Default                    | Purpose                                                              |

@@ -1,7 +1,9 @@
 // The video card, the screen share and their encoders, off the audio thread.
 // VideoThread in video-thread.ts starts this worker and describes the
 // messages.
+import { PeopleOverlay, type Person } from "./people-row.ts";
 import { ProgressBarOverlay } from "./progress-bar.ts";
+import { loadImage } from "@napi-rs/canvas";
 import { UnitRing } from "./unit-ring.ts";
 import { ArtworkLoader, VideoCard } from "./video-card.ts";
 import { VideoFeed, wideCardInput } from "./video-feed.ts";
@@ -47,6 +49,7 @@ class Share {
   private on = false;
   private progressBar = true;
   private overlay: ProgressBarOverlay;
+  readonly people: PeopleOverlay;
   private showing: "card" | "video" | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   readonly player: VideoPlayer;
@@ -61,6 +64,7 @@ class Share {
   ) {
     const epoch = performance.now();
     this.overlay = new ProgressBarOverlay(format);
+    this.people = new PeopleOverlay(format);
     const write = sink(units, "share");
     const failed = (error: string) =>
       send({
@@ -120,6 +124,7 @@ class Share {
       this.show(undefined);
       this.player.release();
       this.overlay.clear();
+      this.people.clear();
     }
   }
 
@@ -165,22 +170,25 @@ class Share {
     return this.player.frame(this.position(), this.key(), this.audioStart());
   }
 
-  /** The video's frame, with the progress bar over it when that is on. */
+  /**
+   * The video's frame, with the progress bar over it when that is on, and
+   * the people in the huddle over that when they are shown.
+   */
   private frame() {
     const frame = this.videoFrame();
+    if (!frame) return frame;
     const position = this.position();
     const duration = this.duration();
-    if (
-      !frame ||
+    const withBar =
       !this.progressBar ||
       this.player.live ||
       // The clock can reach the next entry before its video does.
       this.player.key !== this.key() ||
       position === undefined ||
       !duration
-    )
-      return frame;
-    return this.overlay.over(frame, position / duration);
+        ? frame
+        : this.overlay.over(frame, position / duration);
+    return this.people.over(withBar);
   }
 
   // Keeps the decoder going while the card is up, so the video can take over
@@ -204,6 +212,32 @@ class Share {
     if (which === "card") this.cardFeed.start();
     if (which === "video") this.videoFeed.start();
   }
+}
+
+let peopleRequest = 0;
+
+/** Decodes the photos, then hands the people over; a bad photo is just left out. */
+async function setPeople(
+  target: Share,
+  people: Extract<ToVideoWorker, { type: "people" }>["people"],
+) {
+  const request = ++peopleRequest;
+  const decoded: Person[] = await Promise.all(
+    people.map(async ({ id, name, image }) => {
+      if (!image) return { id, name };
+      try {
+        return {
+          id,
+          name,
+          image: await loadImage(Buffer.from(image, "base64")),
+        };
+      } catch {
+        return { id, name };
+      }
+    }),
+  );
+  // A newer list that finished first stays.
+  if (request === peopleRequest) target.people.setPeople(decoded);
 }
 
 self.addEventListener("message", (event) => {
@@ -295,6 +329,12 @@ self.addEventListener("message", (event) => {
       return share.player.setCaptions(message.on);
     case "progress_bar":
       return share.setProgressBar(message.on);
+    case "people_row":
+      return share.people.setTemplate(message.template);
+    case "people":
+      return void setPeople(share, message.people);
+    case "people_state":
+      return share.people.setState(message.speaking, message.muted);
     case "share_keyframe":
       return share.requestKeyframe();
   }

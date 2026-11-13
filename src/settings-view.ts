@@ -28,6 +28,10 @@ import {
 } from "./settings-schema.ts";
 import type { Interaction } from "./slack-app.ts";
 import {
+  peopleTemplates,
+  type PeopleTemplate,
+} from "./native-media/video-format.ts";
+import {
   anchorQuietChoices,
   huddleMixSources,
   queueLowChoices,
@@ -358,6 +362,9 @@ export type SettingsViewOptions = {
     saves: ChannelSaveView[];
     // Who turned on joining every new Huddle in the channel, when it is on.
     autoJoin?: { enabledBy: string; enabledAt: number };
+    // How the channel's videos show who is in the huddle, for those who
+    // manage the channel; absent for everyone else.
+    participantRow?: PeopleTemplate;
   };
   integrations: { userId: string; requestId: string; permissions: string[] }[];
 };
@@ -788,6 +795,30 @@ function channelBlocks(options: SettingsViewOptions) {
       },
     ),
     ...when(
+      options.channel.participantRow,
+      { type: "header", text: plain("Participants on video") },
+      {
+        type: "section",
+        block_id: "channel_participant_row",
+        text: {
+          type: "mrkdwn",
+          text: "Show who is in the huddle over a playing video, with a green ring around whoever is speaking and a mark on whoever is muted.",
+        },
+        accessory: {
+          type: "static_select",
+          action_id: participantRowAction,
+          options: peopleTemplates.map((template) => ({
+            text: plain(peopleLabels[template]),
+            value: template,
+          })),
+          initial_option: {
+            text: plain(peopleLabels[options.channel.participantRow ?? "off"]),
+            value: options.channel.participantRow ?? "off",
+          },
+        },
+      },
+    ),
+    ...when(
       access.saveDefaults,
       { type: "header", text: plain("Channel defaults") },
       context(
@@ -868,6 +899,14 @@ export function submittedScrobbleServices(
 export const uploadYouTubeCookiesAction = "upload_youtube_cookies";
 // The Admin tab's switches for every channel, valued `<setting>:on|off`.
 export const everyChannelAction = "every_channel_default";
+export const participantRowAction = "channel_participant_row";
+
+const peopleLabels: Record<PeopleTemplate, string> = {
+  off: "Hidden",
+  all: "Everyone in a row",
+  speaking: "Only who is speaking",
+  stack: "Everyone stacked close",
+};
 
 // The cookies' state with a mark: ✅ YouTube plays, ❌ it does not, ⏳ not
 // checked yet.

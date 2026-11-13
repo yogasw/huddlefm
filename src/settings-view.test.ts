@@ -555,6 +555,28 @@ test("marks whether YouTube plays with the cookies", () => {
   expect(youtubeStatus({ signedIn: false, invalid: false })).toStartWith("⏳");
 });
 
+test("the Channel tab offers the participant row to those who manage the channel", () => {
+  const channel = (participantRow?: string) =>
+    JSON.stringify(
+      settingsView(
+        options({
+          tab: "channel",
+          access: { ...access, saveDefaults: true, autoJoin: true },
+          channel: { saves: [], ...(participantRow ? { participantRow } : {}) },
+        } as never),
+      ).blocks,
+    );
+  expect(channel()).not.toContain("channel_participant_row");
+  const shown = channel("speaking");
+  expect(shown).toContain("Participants on video");
+  expect(shown).toContain('"action_id":"channel_participant_row"');
+  expect(shown).toContain(
+    '"initial_option":{"text":{"type":"plain_text","text":"Only who is speaking"},"value":"speaking"}',
+  );
+  for (const value of ["off", "all", "speaking", "stack"])
+    expect(shown).toContain(`"value":"${value}"`);
+});
+
 test("the Admin tab shows the webhook without its token", () => {
   const admin = (webhook: any) =>
     JSON.stringify(

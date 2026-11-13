@@ -137,6 +137,9 @@ type Body = {
 // the same place.
 const slackUserId = /^[UW][A-Z0-9]+$/;
 
+// Where profile photos may come from.
+const photoHosts = ["slack-edge.com", "slack.com", "gravatar.com"];
+
 export type Interaction = ReturnType<typeof normalizeInteraction>;
 
 // Slack answers WebSocket pings but never sends application frames on an idle
@@ -246,7 +249,11 @@ export class SlackAppAdapter {
   private socket?: WebSocket;
   private web: WebClient;
   private interactive: WebClient;
-  private names = new Map<string, Promise<{ full: string; display: string }>>();
+  private names = new Map<
+    string,
+    Promise<{ full: string; display: string; image?: string }>
+  >();
+  private photos = new Map<string, Promise<string | undefined>>();
   private publicChannels = new Map<string, Promise<boolean>>();
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectAttempts = 0;
@@ -611,7 +618,11 @@ export class SlackAppAdapter {
     // Only Slack's own user IDs can be looked up: a label such as the one on
     // a recommended song is shown as it is, without asking Slack.
     if (!slackUserId.test(userId)) {
-      const names = Promise.resolve({ full: userId, display: userId });
+      const names = Promise.resolve({
+        full: userId,
+        display: userId,
+        image: undefined as string | undefined,
+      });
       this.names.set(userId, names);
       return names;
     }
@@ -626,6 +637,8 @@ export class SlackAppAdapter {
         return {
           full: full || display || handle,
           display: display || full || handle,
+          image:
+            result.user?.profile?.image_72 || result.user?.profile?.image_48,
         };
       })
       .catch((error) => {
@@ -635,7 +648,11 @@ export class SlackAppAdapter {
         );
         // Not kept, so the next song asks Slack again.
         this.names.delete(userId);
-        return { full: userId, display: userId };
+        return {
+          full: userId,
+          display: userId,
+          image: undefined as string | undefined,
+        };
       });
     this.names.set(userId, names);
     return names;
@@ -643,6 +660,49 @@ export class SlackAppAdapter {
 
   async userName(userId: string) {
     return (await this.profile(userId)).full;
+  }
+
+  /**
+   * A user's profile photo as base64, or nothing when they have none or it
+   * cannot be fetched. Only https pictures from Slack's and Gravatar's hosts
+   * are fetched, at most 300 KB, and each is kept once it has been found.
+   */
+  profilePhoto(userId: string) {
+    const cached = this.photos.get(userId);
+    if (cached) return cached;
+    const photo = this.profile(userId)
+      .then(async ({ image }) => {
+        if (!image) return undefined;
+        const url = new URL(image);
+        if (
+          url.protocol !== "https:" ||
+          !photoHosts.some(
+            (host) =>
+              url.hostname === host || url.hostname.endsWith(`.${host}`),
+          )
+        )
+          return undefined;
+        const response = await fetch(url, {
+          signal: AbortSignal.timeout(5_000),
+          redirect: "error",
+        });
+        if (!response.ok) return undefined;
+        const bytes = await response.arrayBuffer();
+        return bytes.byteLength && bytes.byteLength <= 300_000
+          ? Buffer.from(bytes).toString("base64")
+          : undefined;
+      })
+      .catch((error) => {
+        log.debug(
+          { event: "profile_photo_failed", userId, err: error },
+          "Could not fetch a profile photo",
+        );
+        // Not kept, so a later row tries again.
+        this.photos.delete(userId);
+        return undefined;
+      });
+    this.photos.set(userId, photo);
+    return photo;
   }
 
   // The name people go by, for what other listeners see, such as who added

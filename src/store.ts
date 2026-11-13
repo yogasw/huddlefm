@@ -1,4 +1,8 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
+import {
+  peopleTemplates,
+  type PeopleTemplate,
+} from "./native-media/video-format.ts";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { MediaForm, TrackKind, TrackMetadata } from "./tracks.ts";
@@ -94,11 +98,15 @@ export type ChannelDefaults = {
   communism?: boolean;
   // A channel that watches videos starts its sessions in video mode.
   mediaMode?: MediaMode;
+  // How a channel's video shows who is in the huddle; hidden unless set.
+  participantRow?: PeopleTemplate;
   // What admins chose to tell the thread as the queue runs low. Only the
   // every-channel row uses it.
   queueMessages?: QueueMessages;
   permissions?: Capability[];
 };
+
+export { peopleTemplates, type PeopleTemplate };
 
 /** What the webhook can be told about. */
 export const webhookEvents = [
@@ -216,6 +224,8 @@ export function parseChannelDefaults(
     defaults.communism = saved.communism;
   const mediaMode = modeOf(mediaModes, saved.mediaMode);
   if (mediaMode) defaults.mediaMode = mediaMode;
+  const participantRow = modeOf(peopleTemplates, saved.participantRow);
+  if (participantRow) defaults.participantRow = participantRow;
   const queueMessages = parseQueueMessages(saved.queueMessages);
   if (queueMessages) defaults.queueMessages = queueMessages;
   if (Array.isArray(saved.permissions))

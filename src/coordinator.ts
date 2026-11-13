@@ -23,8 +23,10 @@ import {
   anchorQuietChoices,
   queueLowChoices,
   queueMessageSettings,
+  peopleTemplates,
   queueStages,
   type QueueStage,
+  type PeopleTemplate,
   type WebhookEvent,
   recentTrackLimit,
   scrobblingModes,
@@ -150,6 +152,7 @@ import {
   selected,
   settingsTabActionPrefix,
   everyChannelAction,
+  participantRowAction,
   settingsTabFromAction,
   settingsTabs,
   settingsView,
@@ -313,6 +316,7 @@ const unfinishedSaveName = "Left unfinished";
 
 const channelRoleActions = new Set([
   "continue_last_queue",
+  participantRowAction,
   "open_settings",
   "save_channel_defaults",
   "clear_channel_defaults",
@@ -985,6 +989,8 @@ export class Coordinator {
     this.sendMedia({ type: "captions", on: this.captions });
     this.sendMedia({ type: "progress_bar", on: this.progressBar });
     this.sendMedia({ type: "video_mode", on: this.videoMode });
+    // A media process that just joined knows nothing of the people yet.
+    this.sendPeople(true);
   }
 
   // Picks the current song back up where it was, for a media backend that
@@ -1321,6 +1327,7 @@ export class Coordinator {
         claim_host: () => this.claimHost(interaction),
         start_communism: () => this.startCommunismFromSettings(interaction),
         [everyChannelAction]: () => this.setEveryChannel(interaction),
+        [participantRowAction]: () => this.setParticipantRow(interaction),
         continue_lastfm: () => this.continueLastFm(interaction),
         disconnect_lastfm: () => this.disconnectLastFm(interaction),
         disconnect_listenbrainz: () => this.disconnectListenBrainz(interaction),
@@ -3154,6 +3161,7 @@ export class Coordinator {
       this.sessionChanged();
     }
     this.participants.add(userId);
+    this.sendPeople();
     this.plugins.changed();
     this.plugins.refreshYouFor(userId);
     this.playbackScrobbling?.memberJoined(userId);
@@ -3171,6 +3179,7 @@ export class Coordinator {
     if (this.participants.delete(userId)) {
       this.participantsRevision++;
       this.sessionChanged();
+      this.sendPeople();
       this.plugins.changed();
       // out of the huddle, they're off its data channel too
       this.plugins.forget(userId);
@@ -7391,6 +7400,9 @@ export class Coordinator {
           autoJoin: this.managesChannel(userId)
             ? this.store.channelAutoJoin(this.roomId)
             : undefined,
+          participantRow: this.managesChannel(userId)
+            ? this.channelPeopleRow()
+            : undefined,
         }),
         saves: this.store
           .sessionSaves([{ type: "channel", id: this.roomId }])
@@ -8127,6 +8139,86 @@ export class Coordinator {
   // Turns joining every new Huddle in the channel on or off. Unlike the
   // defaults it takes nothing from the session, so only the user's role is
   // checked again.
+  // How this channel's videos show who is in the huddle: hidden unless a
+  // channel manager chose a way in Settings.
+  private channelPeopleRow(): PeopleTemplate {
+    return this.store.channelDefaults(this.roomId)?.participantRow ?? "off";
+  }
+
+  // Tells the media process who is in the huddle and how to draw them, which
+  // it only does over a playing video. The photos are fetched once and kept,
+  // and a list that is out of date by the time its photos arrive is dropped.
+  private peopleRequest = 0;
+  private sentPeopleRow: PeopleTemplate = "off";
+  private sendPeople(fresh = false) {
+    const template = this.videoMode ? this.channelPeopleRow() : "off";
+    // A fresh media process starts with the row off, so only a row that is
+    // on needs saying again.
+    if (template !== this.sentPeopleRow || (fresh && template !== "off")) {
+      this.sentPeopleRow = template;
+      this.sendMedia({ type: "people_row", template });
+    }
+    if (template === "off") return;
+    const request = ++this.peopleRequest;
+    const ids = this.listenerIds().slice(0, 40);
+    void Promise.all(
+      ids.map(async (id) => ({
+        id,
+        name: await this.slack.displayName(id),
+        image: await this.slack.profilePhoto(id),
+      })),
+    )
+      .then((people) => {
+        if (request !== this.peopleRequest || this.state === "ended") return;
+        this.sendMedia({
+          type: "people",
+          people: people.map(({ id, name, image }) => ({
+            id,
+            name,
+            ...(image ? { image } : {}),
+          })),
+        });
+      })
+      .catch((error) =>
+        this.log.warn(
+          { event: "people_row_failed", err: error },
+          "Could not tell the media process who is in the huddle",
+        ),
+      );
+  }
+
+  // A channel manager's choice, from the Channel tab, of how this channel's
+  // videos show who is in the huddle. It takes effect in this session too.
+  private async setParticipantRow(interaction: Interaction) {
+    if (!this.managesChannel(interaction.userId))
+      return this.notice(
+        interaction.userId,
+        "Only channel managers can change this for the channel.",
+      );
+    if (parseMetadata(interaction.metadata).sessionId !== this.id)
+      return this.notice(
+        interaction.userId,
+        "Settings are stale; reopen them.",
+      );
+    const template = peopleTemplates.find(
+      (candidate) => candidate === interaction.value,
+    );
+    if (!template) return;
+    const saved = this.store.channelDefaults(this.roomId) ?? {};
+    this.store.setChannelDefaults(
+      this.roomId,
+      { ...saved, participantRow: template },
+      interaction.userId,
+    );
+    this.audit.record("channel_participant_row.changed", interaction.userId, {
+      sessionId: this.id,
+      channelId: this.roomId,
+      template,
+    });
+    this.sendPeople();
+    if (interaction.viewId) await this.updateSettings(interaction);
+  }
+
   private async setChannelAutoJoin(interaction: Interaction, on: boolean) {
     if (!this.managesChannel(interaction.userId))
       return this.notice(
