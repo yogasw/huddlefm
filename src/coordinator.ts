@@ -801,6 +801,7 @@ export class Coordinator {
         anchorEnabled: this.anchorEnabled,
         progressBar: this.progressBar,
         communism: this.communism,
+        mediaMode: this.mediaMode,
       });
       this.setPermissions(this.allowed);
       // Media joined with the configured volume and ducking, and its own
@@ -924,6 +925,15 @@ export class Coordinator {
     this.progressBar = defaults.progressBar ?? this.progressBar;
     this.communism = defaults.communism ?? this.communism;
     if (defaults.permissions) this.allowed = new Set(defaults.permissions);
+    if (defaults.mediaMode === "video") {
+      const blocked = this.videoModeBlocked();
+      if (blocked)
+        this.log.warn(
+          { event: "channel_video_mode_blocked", reason: blocked },
+          "Session started in music mode instead of the channel's video mode",
+        );
+      else this.mediaMode = "video";
+    }
     this.channelDefaultsApplied = true;
     this.log.info(
       { event: "channel_defaults_applied", defaults },
@@ -7979,6 +7989,9 @@ export class Coordinator {
         allowed.has(capability),
       );
       defaults.communism = this.communism;
+      // Only the host switches modes, so only the host saves one.
+      defaults.mediaMode =
+        selected(state.media_mode?.mode, mediaModes) ?? this.mediaMode;
     }
     this.store.setChannelDefaults(this.roomId, defaults, interaction.userId);
     this.audit.record("channel_defaults.saved", interaction.userId, {

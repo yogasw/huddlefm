@@ -1345,6 +1345,7 @@ test("channel defaults keep only settings that are still valid", () => {
       volume: 0.4,
       autoplay: "huddle",
       anchorQuietMinutes: 2,
+      mediaMode: "video",
       permissions: ["add", "skip"],
     },
     "U1",
@@ -1353,6 +1354,7 @@ test("channel defaults keep only settings that are still valid", () => {
     volume: 0.4,
     autoplay: "huddle",
     anchorQuietMinutes: 2,
+    mediaMode: "video",
     permissions: ["add", "skip"],
   });
   store.db
@@ -1364,6 +1366,7 @@ test("channel defaults keep only settings that are still valid", () => {
         loopMode: "queue",
         anchorEnabled: "yes",
         anchorQuietMinutes: 7,
+        mediaMode: "radio",
         permissions: ["skip", "fly"],
       }),
       "C1",

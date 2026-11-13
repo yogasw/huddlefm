@@ -5,7 +5,7 @@ import type { AuditLog } from "./audit-log.ts";
 import { Coordinator } from "./coordinator.ts";
 import type { LyricsCatalog } from "./lyrics.ts";
 import type { SlackAppAdapter } from "./slack-app.ts";
-import { Store } from "./store.ts";
+import { type ChannelDefaults, Store } from "./store.ts";
 import type { PreparedMedia, TrackCatalog, TrackMetadata } from "./tracks.ts";
 import { captionsPath, chaptersPath } from "./videos.ts";
 
@@ -39,7 +39,11 @@ type Block = {
  * files on disk, which counts what it was asked for.
  */
 async function setup(
-  options: { videoSessions?: number; sessionLimit?: number } = {},
+  options: {
+    videoSessions?: number;
+    sessionLimit?: number;
+    channelDefaults?: ChannelDefaults;
+  } = {},
 ) {
   const directory = await mediaDirectory();
   const posted: unknown[][] = [];
@@ -154,6 +158,8 @@ async function setup(
     },
   } as unknown as TrackCatalog;
   const store = new Store(":memory:");
+  if (options.channelDefaults)
+    store.setChannelDefaults("channel", options.channelDefaults, "manager");
   const coordinator = new Coordinator(
     {
       huddleCallId: "call",
@@ -356,6 +362,26 @@ test("the host switches to video mode in Settings, and media shares the screen",
   expect(result.coordinator.videoMode).toBeFalse();
   expect(result.media.at(-1)).toEqual({ type: "video_mode", on: false });
   expect(result.media).toContainEqual({ type: "ducking_mode", mode: "gentle" });
+  await result.coordinator.endFromSlack();
+});
+
+test("a channel saved in video mode starts its sessions in video mode", async () => {
+  const result = await setup({ channelDefaults: { mediaMode: "video" } });
+  expect(result.coordinator.videoMode).toBeTrue();
+  expect(result.media).toContainEqual({ type: "video_mode", on: true });
+  expect(
+    result.store.resumableSessions(Date.now(), 60_000).sessions[0],
+  ).toMatchObject({ mediaMode: "video" });
+  await result.coordinator.endFromSlack();
+});
+
+test("a channel's video mode waits when the server's video slots are taken", async () => {
+  const result = await setup({
+    channelDefaults: { mediaMode: "video" },
+    videoSessions: 2,
+  });
+  expect(result.coordinator.videoMode).toBeFalse();
+  expect(result.media).not.toContainEqual({ type: "video_mode", on: true });
   await result.coordinator.endFromSlack();
 });
 
