@@ -252,7 +252,7 @@ export function agentTools(coordinator: Coordinator, userId: string) {
     }),
     update_settings: tool({
       description: video
-        ? "Change session settings the user is allowed to configure (mode, autoplay of related videos, loop, keep-player-at-bottom, permission preset, host, or communism mode). Display, transitions and ducking are paused in video mode."
+        ? "Change session settings the user is allowed to configure (mode, autoplay of related videos, loop, keep-player-at-bottom, permission preset, host, or communism mode). Display and transitions are paused in video mode."
         : "Change session settings the user is allowed to configure (mode, display, autoplay, loop, transitions, keep-player-at-bottom, permission preset, host, or communism mode).",
       // Video mode leaves the music's own settings out of the schema.
       inputSchema: video
@@ -374,7 +374,7 @@ Be concise. After taking actions, briefly confirm what changed. Do not invent tr
 Do not use emojis.
 ${
   options.coordinator.videoMode
-    ? "The session is in video mode: people watch videos together on a screen share. Autoplay, Huddle mix, lyrics, crossfades, ducking and scrobbling are paused until the host switches back to music mode."
+    ? "The session is in video mode: people watch videos together on a screen share. Autoplay, Huddle mix, lyrics, crossfades and scrobbling are paused until the host switches back to music mode."
     : `The session is in music mode. A video link added here plays as audio unless add_tracks is given withVideoMode. Display modes: ${displayModes.join(", ")}. Transition modes: ${transitionModes.join(", ")}.`
 }${
         options.coordinator.communismMode

@@ -142,8 +142,8 @@ const mediaModeDescriptions: Record<MediaMode, string> = {
 };
 const duckingDescriptions: Record<DuckingMode, string> = {
   off: "Keep playing at full volume",
-  gentle: "Dip the music under the conversation",
-  strong: "Drop the music well back while people talk",
+  gentle: "Dip the sound under the conversation",
+  strong: "Drop the sound well back while people talk",
 };
 export const huddleMixSourceLabels: Record<HuddleMixSource, string> = {
   added: "Songs I've added or liked",
@@ -328,10 +328,10 @@ const entries: Entry[] = [
     id: "ducking",
     tab: "session",
     label: "Auto-duck",
-    hint: "Lower the music while someone is speaking",
+    hint: "Lower the sound while someone is speaking",
     requires: "configure",
     kind: "select",
-    visible: music,
+    visible: always,
     value: ({ session }) => session.duckingMode,
     options: () =>
       choices(

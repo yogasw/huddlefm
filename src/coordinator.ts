@@ -941,7 +941,8 @@ export class Coordinator {
   }
 
   // Video mode stops applying the music settings without changing them: no
-  // lyrics, no crossfades, and no ducking under the conversation.
+  // lyrics and no crossfades. Ducking still pulls the video under the
+  // conversation.
   private mediaDisplayMode(): DisplayMode {
     return this.videoMode ? "default" : this.displayMode;
   }
@@ -955,7 +956,7 @@ export class Coordinator {
     });
     this.sendMedia({
       type: "ducking_mode",
-      mode: this.videoMode ? "off" : this.duckingMode,
+      mode: this.duckingMode,
     });
     this.sendMedia({ type: "captions", on: this.captions });
     this.sendMedia({ type: "progress_bar", on: this.progressBar });
@@ -7861,11 +7862,10 @@ export class Coordinator {
     progressBar?: boolean;
   }) {
     const changed: string[] = [];
-    const { loopMode, anchorEnabled, progressBar } = patch;
+    const { loopMode, anchorEnabled, progressBar, duckingMode } = patch;
     // Video mode does not show the music's own settings, and leaves them
     // as they are, and music mode does the same with video's autoplay.
-    const { displayMode, autoplayMode, transitionMode, duckingMode } = this
-      .videoMode
+    const { displayMode, autoplayMode, transitionMode } = this.videoMode
       ? {}
       : patch;
     const { videoAutoplay } = this.videoMode ? patch : {};
