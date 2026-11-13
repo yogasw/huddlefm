@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recentTrackLimit, Store } from "./store.ts";
+import { queueMessageSettings, recentTrackLimit, Store } from "./store.ts";
 
 function createSession(
   store: Store,
@@ -1333,6 +1333,46 @@ test("drops a saved song's details of the wrong type, and songs without a source
     track,
     { ...track, album: "Album", duration: 180, artwork: "https://art" },
   ]);
+  store.close();
+});
+
+test("queue message settings keep valid stages and fill in the defaults", () => {
+  const store = new Store(":memory:");
+  expect(queueMessageSettings(store.channelDefaults("*"))).toEqual({
+    low: { enabled: false, mention: true, left: 1 },
+    last: { enabled: true, mention: true },
+    ended: { enabled: true, mention: true },
+  });
+  store.setChannelDefaults(
+    "*",
+    {
+      queueMessages: {
+        low: { enabled: true, mention: false, left: 3 },
+        ended: { enabled: false },
+      },
+    },
+    "U1",
+  );
+  expect(queueMessageSettings(store.channelDefaults("*"))).toEqual({
+    low: { enabled: true, mention: false, left: 3 },
+    last: { enabled: true, mention: true },
+    ended: { enabled: false, mention: true },
+  });
+  store.db
+    .query("UPDATE channel_defaults SET settings = ? WHERE channel_id = ?")
+    .run(
+      JSON.stringify({
+        queueMessages: {
+          low: { enabled: "yes", left: 9 },
+          last: { mention: false },
+          other: { enabled: true },
+        },
+      }),
+      "*",
+    );
+  expect(store.channelDefaults("*")).toEqual({
+    queueMessages: { last: { mention: false } },
+  });
   store.close();
 });
 

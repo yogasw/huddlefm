@@ -1956,6 +1956,146 @@ test("mentions the agent when the last song starts and again when the queue ends
   await result.coordinator.endFromSlack();
 });
 
+const queueTracks = {
+  resolve: async (value: string) => ({
+    sourceInput: `https://example.com/${value}`,
+    canonicalUrl: `https://example.com/${value}`,
+    sourceId: value,
+    title: value,
+    artist: "Artist",
+  }),
+  prepare: async (_track: unknown, _directory: string, id: string) =>
+    `${id}.opus`,
+} as unknown as TrackCatalog;
+
+// Runs a queue of the given songs to its end, returning what was posted.
+async function playQueue(
+  queueMessages: NonNullable<
+    Parameters<Store["setChannelDefaults"]>[1]["queueMessages"]
+  >,
+  songs: string[],
+  mention?: string,
+) {
+  const store = new Store(":memory:");
+  store.setChannelDefaults("*", { queueMessages }, "admin");
+  const result = setup(
+    queueTracks,
+    {
+      aloneMs: 60_000,
+      idleMs: 600_000,
+      pausedMs: 600_000,
+      warningMs: 120_000,
+      queueEndMention: mention,
+    },
+    undefined,
+    undefined,
+    store,
+  );
+  await result.coordinator.start();
+  for (const value of songs)
+    await result.coordinator.action({
+      type: "block_actions",
+      userId: "host",
+      actionId: "add_track_to_queue",
+      value,
+      channelId: "channel",
+      messageTs: "1",
+      triggerId: "",
+      metadata: "",
+      state: {},
+    });
+  const played = new Set<string>();
+  for (let index = 0; index < songs.length; index++) {
+    await until(() =>
+      result.media.some(
+        (message) =>
+          (message as { type?: string; entryId?: string }).type === "play" &&
+          !played.has((message as { entryId: string }).entryId),
+      ),
+    );
+    const play = result.media.find(
+      (message) =>
+        (message as { type?: string }).type === "play" &&
+        !played.has((message as { entryId: string }).entryId),
+    ) as { entryId: string };
+    played.add(play.entryId);
+    await result.coordinator.mediaEvent("track_ended", {
+      entryId: play.entryId,
+    });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const texts = result.posted.map((post) => String((post as unknown[])[2]));
+  await result.coordinator.endFromSlack();
+  return texts;
+}
+
+test("the running-low notice goes out once as the queue falls to the chosen number", async () => {
+  const texts = await playQueue(
+    { low: { enabled: true, left: 1 } },
+    ["a", "b", "c"],
+    "U01TESTAGENT",
+  );
+  const low = texts.filter((text) => text.includes("Heads up: only"));
+  expect(low).toEqual([
+    "<@U01TESTAGENT> Heads up: only 1 song left in the queue.",
+  ]);
+  // The last song also played alone while the others were still being added.
+  expect(
+    texts.filter((text) => text.includes("The last song in the queue")),
+  ).toHaveLength(2);
+});
+
+test("the running-low notice is off until an admin turns it on", async () => {
+  const texts = await playQueue({}, ["a", "b", "c"], "U01TESTAGENT");
+  expect(texts.some((text) => text.includes("Heads up"))).toBeFalse();
+});
+
+test("a stage without a mention tells the thread without calling the bot", async () => {
+  const texts = await playQueue(
+    { last: { mention: false }, ended: { mention: false } },
+    ["a"],
+  );
+  expect(texts).toContain("The last song in the queue is playing.");
+  expect(texts).toContain("The queue has ended.");
+});
+
+test("a stage that is switched off says nothing", async () => {
+  const texts = await playQueue(
+    { last: { enabled: false }, ended: { enabled: false } },
+    ["a"],
+    "U01TESTAGENT",
+  );
+  expect(texts.some((text) => text.includes("<@U01TESTAGENT>"))).toBeFalse();
+});
+
+test("queue message stages change one setting at a time from the Admin menu", () => {
+  const result = setup();
+  const change = (stage: string, what: string) => {
+    const saved: Record<string, unknown> = {};
+    const ok = Reflect.apply(
+      Reflect.get(result.coordinator, "setQueueStage"),
+      result.coordinator,
+      [saved, stage, what],
+    );
+    return { ok, saved };
+  };
+  expect(change("low", "toggle").saved).toEqual({
+    queueMessages: { low: { enabled: true } },
+  });
+  expect(change("last", "toggle").saved).toEqual({
+    queueMessages: { last: { enabled: false } },
+  });
+  expect(change("ended", "mention").saved).toEqual({
+    queueMessages: { ended: { mention: false } },
+  });
+  expect(change("low", "3").saved).toEqual({
+    queueMessages: { low: { left: 3 } },
+  });
+  expect(change("low", "9").ok).toBeFalse();
+  expect(change("last", "2").ok).toBeFalse();
+  expect(change("nope", "toggle").ok).toBeFalse();
+});
+
 test("Previous restarts after five seconds and seek controls move ten seconds", async () => {
   const tracks = {
     resolve: async (value: string) => ({

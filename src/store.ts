@@ -94,8 +94,70 @@ export type ChannelDefaults = {
   communism?: boolean;
   // A channel that watches videos starts its sessions in video mode.
   mediaMode?: MediaMode;
+  // What admins chose to tell the thread as the queue runs low. Only the
+  // every-channel row uses it.
+  queueMessages?: QueueMessages;
   permissions?: Capability[];
 };
+
+/** The three moments the thread hears about the queue running down. */
+export const queueStages = ["low", "last", "ended"] as const;
+export type QueueStage = (typeof queueStages)[number];
+
+/** How many songs may be left when the "running low" notice goes out. */
+export const queueLowChoices = [1, 2, 3] as const;
+
+export type QueueMessageSetting = { enabled?: boolean; mention?: boolean };
+export type QueueMessages = {
+  low?: QueueMessageSetting & { left?: number };
+  last?: QueueMessageSetting;
+  ended?: QueueMessageSetting;
+};
+
+/**
+ * Each stage with its defaults filled in: the last song and the end of the
+ * queue keep telling the agent, as they always did, and the running-low
+ * notice is off until an admin turns it on.
+ */
+export function queueMessageSettings(defaults?: ChannelDefaults) {
+  const saved = defaults?.queueMessages;
+  return {
+    low: {
+      enabled: saved?.low?.enabled ?? false,
+      mention: saved?.low?.mention ?? true,
+      left: saved?.low?.left ?? 1,
+    },
+    last: {
+      enabled: saved?.last?.enabled ?? true,
+      mention: saved?.last?.mention ?? true,
+    },
+    ended: {
+      enabled: saved?.ended?.enabled ?? true,
+      mention: saved?.ended?.mention ?? true,
+    },
+  };
+}
+
+function parseQueueMessages(saved: unknown): QueueMessages | undefined {
+  if (!saved || typeof saved !== "object") return undefined;
+  const raw = saved as Record<string, unknown>;
+  const messages: QueueMessages = {};
+  for (const stage of queueStages) {
+    const entry = raw[stage];
+    if (!entry || typeof entry !== "object") continue;
+    const source = entry as Record<string, unknown>;
+    const setting: QueueMessageSetting & { left?: number } = {};
+    if (typeof source.enabled === "boolean") setting.enabled = source.enabled;
+    if (typeof source.mention === "boolean") setting.mention = source.mention;
+    if (
+      stage === "low" &&
+      queueLowChoices.includes(source.left as (typeof queueLowChoices)[number])
+    )
+      setting.left = source.left as number;
+    if (Object.keys(setting).length) messages[stage] = setting;
+  }
+  return Object.keys(messages).length ? messages : undefined;
+}
 
 /** The quiet waits admins can pick before the player moves down. */
 export const anchorQuietChoices = [0, 1, 2, 5, 10] as const;
@@ -135,6 +197,8 @@ export function parseChannelDefaults(
     defaults.communism = saved.communism;
   const mediaMode = modeOf(mediaModes, saved.mediaMode);
   if (mediaMode) defaults.mediaMode = mediaMode;
+  const queueMessages = parseQueueMessages(saved.queueMessages);
+  if (queueMessages) defaults.queueMessages = queueMessages;
   if (Array.isArray(saved.permissions))
     defaults.permissions = capabilities.filter((capability) =>
       (saved.permissions as unknown[]).includes(capability),

@@ -21,6 +21,10 @@ import {
   permissionPresets,
   everyChannel,
   anchorQuietChoices,
+  queueLowChoices,
+  queueMessageSettings,
+  queueStages,
+  type QueueStage,
   recentTrackLimit,
   scrobblingModes,
   Store,
@@ -89,6 +93,7 @@ import {
   elapsed,
   escape,
   lastSongMessage,
+  lowQueueMessage,
   queueEndText,
   recommendedBy,
   trackSource,
@@ -449,6 +454,7 @@ export class Coordinator {
   private history: Entry[] = [];
   // Whether the agent was told the queue ran out, since a song last started.
   private queueEndAnnounced = false;
+  private lowQueueAnnounced = false;
   private current?: Entry;
   private state = "ready";
   private playbackSeconds = 0;
@@ -4246,14 +4252,21 @@ export class Coordinator {
     );
   }
 
-  // Mentions QUEUE_END_MENTION in the thread so an agent can add more: first
-  // when the last song in the queue starts, so the music can go on without a
-  // gap, then once the queue has run out, until a song starts again. Only with
-  // someone still listening, and not while autoplay keeps the queue filled.
-  private async announceQueueEnd(stage: "last" | "ended") {
-    const agentId = this.config.queueEndMention;
+  // Tells the thread the queue is running down, in up to three steps an admin
+  // can switch on or off: a few songs left, the last song starting, and the
+  // queue having run out, until a song starts again. Each can mention
+  // QUEUE_END_MENTION so an agent can add more, so the music goes on without
+  // a gap. Only with someone still listening, and not while autoplay keeps
+  // the queue filled.
+  private async announceQueueEnd(stage: QueueStage) {
+    const setting = queueMessageSettings(
+      this.store.channelDefaults(everyChannel),
+    )[stage];
+    if (!setting.enabled) return;
+    // A mention with nobody configured to mention has nothing to say.
+    const agentId = setting.mention ? this.config.queueEndMention : undefined;
+    if (setting.mention && !agentId) return;
     if (
-      !agentId ||
       (stage === "ended" && this.queueEndAnnounced) ||
       this.autoplayOn() ||
       !this.listenerIds().length ||
@@ -4261,6 +4274,12 @@ export class Coordinator {
     )
       return;
     if (stage === "ended") this.queueEndAnnounced = true;
+    const message =
+      stage === "low"
+        ? lowQueueMessage(this.queue.length)
+        : stage === "last"
+          ? lastSongMessage
+          : this.config.queueEndMessage;
     try {
       await this.post(
         this.room.uiChannelId,
@@ -4268,19 +4287,34 @@ export class Coordinator {
         queueEndText(
           agentId,
           [...this.history, ...(this.current ? [this.current] : [])].slice(-5),
-          stage === "last" ? lastSongMessage : this.config.queueEndMessage,
+          message,
         ),
       );
       this.log.info(
         { event: "queue_end_announced", agentId, stage },
-        "Told an agent the queue ended",
+        "Told the thread the queue is running down",
       );
     } catch (error) {
       this.log.warn(
         { event: "queue_end_announce_failed", agentId, stage, err: error },
-        "Could not tell the agent the queue ended",
+        "Could not tell the thread the queue is running down",
       );
     }
+  }
+
+  // The running-low notice goes out once as the queue falls to the chosen
+  // number of songs, and again only after it has been filled past that.
+  private lowQueueCheck() {
+    const { enabled, left } = queueMessageSettings(
+      this.store.channelDefaults(everyChannel),
+    ).low;
+    if (!enabled || this.queue.length > left) {
+      if (this.queue.length > left) this.lowQueueAnnounced = false;
+      return;
+    }
+    if (!this.queue.length || this.lowQueueAnnounced) return;
+    this.lowQueueAnnounced = true;
+    void this.announceQueueEnd("low");
   }
 
   private listenerIds() {
@@ -5507,6 +5541,7 @@ export class Coordinator {
       "Track started",
     );
     if (!this.queue.length) void this.announceQueueEnd("last");
+    else this.lowQueueCheck();
     this.startScrobbling(next, 0);
     await this.markWatched(next);
     this.noteSessionRecommendations();
@@ -7271,6 +7306,9 @@ export class Coordinator {
                     ?.anchorQuietMinutes ?? 0,
                 everyoneHost:
                   this.store.channelDefaults(everyChannel)?.communism === true,
+                queueMessages: queueMessageSettings(
+                  this.store.channelDefaults(everyChannel),
+                ),
               },
             },
           }
@@ -8087,10 +8125,21 @@ export class Coordinator {
   // The Admin tab's switches for every channel's new sessions.
   private async setEveryChannel(interaction: Interaction) {
     if (!this.botAdmin(interaction.userId)) return;
-    const [setting, value] = (interaction.value ?? "").split(":");
+    const [setting, value, third] = (interaction.value ?? "").split(":");
     const on = value === "on";
     const saved = this.store.channelDefaults(everyChannel) ?? {};
     const minutes = Number(value);
+    if (setting === "queueStage") {
+      if (!this.setQueueStage(saved, value, third)) return;
+      this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
+      this.audit.record("every_channel.updated", interaction.userId, {
+        setting,
+        stage: value,
+        change: third,
+      });
+      if (interaction.viewId) await this.updateSettings(interaction);
+      return;
+    }
     if (setting === "anchor") saved.anchorEnabled = on;
     else if (
       setting === "anchorQuiet" &&
@@ -8117,6 +8166,32 @@ export class Coordinator {
       this.startCommunism(interaction.userId);
     await this.render();
     if (interaction.viewId) await this.updateSettings(interaction);
+  }
+
+  // One change to a queue-message stage from its menu: switch it on or off,
+  // switch its mention on or off, or (for the running-low notice) the number
+  // of songs left. Returns whether it was a valid change.
+  private setQueueStage(
+    saved: ChannelDefaults,
+    stage: string | undefined,
+    change: string | undefined,
+  ) {
+    if (!queueStages.includes(stage as QueueStage)) return false;
+    const key = stage as QueueStage;
+    const current = queueMessageSettings(saved)[key];
+    const messages = (saved.queueMessages ??= {});
+    const entry = (messages[key] ??= {});
+    if (change === "toggle") entry.enabled = !current.enabled;
+    else if (change === "mention") entry.mention = !current.mention;
+    else if (
+      key === "low" &&
+      queueLowChoices.includes(
+        Number(change) as (typeof queueLowChoices)[number],
+      )
+    )
+      (entry as { left?: number }).left = Number(change);
+    else return false;
+    return true;
   }
 
   // Settings' Start Everyone Is Host mode button, past its confirmation.

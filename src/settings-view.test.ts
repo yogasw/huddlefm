@@ -567,6 +567,11 @@ test("switches what every channel's new sessions start with", () => {
           anchor: true,
           anchorQuietMinutes: 2,
           everyoneHost: false,
+          queueMessages: {
+            low: { enabled: false, mention: true, left: 2 },
+            last: { enabled: true, mention: false },
+            ended: { enabled: true, mention: true },
+          },
         },
       },
     }),
@@ -580,4 +585,39 @@ test("switches what every channel's new sessions start with", () => {
   expect(text).toContain('"value":"anchor:off"');
   expect(text).toContain("⬜ Everyone in the huddle is host");
   expect(text).toContain('"value":"everyone:on"');
+  // Each queue message is a row with its state in the text and a menu.
+  const row = (stage: string) =>
+    (view.blocks as { block_id?: string; text?: { text: string } }[]).find(
+      (block) => block.block_id === `every_channel_queue_${stage}`,
+    ) as {
+      text: { text: string };
+      accessory: { type: string; options: any[] };
+    };
+  expect(row("low").text.text).toContain("⏸ Off · 🔔 Mentions the bot");
+  expect(row("low").text.text).toContain("at 2 songs left");
+  expect(row("low").accessory.type).toBe("overflow");
+  expect(row("low").accessory.options.map((option) => option.value)).toEqual([
+    "queueStage:low:toggle",
+    "queueStage:low:mention",
+    "queueStage:low:1",
+    "queueStage:low:2",
+    "queueStage:low:3",
+  ]);
+  expect(row("last").text.text).toContain("✅ On · 🔕 No mention");
+  expect(
+    row("last").accessory.options.map((option) => option.text.text),
+  ).toEqual(["Turn off", "Mention the bot"]);
+  expect(row("ended").accessory.options).toHaveLength(2);
+  const order = (view.blocks as { block_id?: string }[])
+    .map((block) => block.block_id)
+    .filter(
+      (id) =>
+        id?.startsWith("every_channel_queue_") &&
+        id !== "every_channel_queue_hint",
+    );
+  expect(order).toEqual([
+    "every_channel_queue_ended",
+    "every_channel_queue_last",
+    "every_channel_queue_low",
+  ]);
 });

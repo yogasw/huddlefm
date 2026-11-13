@@ -151,6 +151,8 @@ receives events from channels it is in.
 | `PAUSED_TIMEOUT_MS`             | `600000`               | Leave when paused for this long                                                                                                                                                                                                                                                     |
 | `CHIME_MEDIA_REGION`            | `ap-southeast-2`       | AWS region for Chime media                                                                                                                                                                                                                                                          |
 
+The Admin tab also has a row for each of the three queue notices: the last song starting, the queue running out, and (off by default) only 1 to 3 songs being left. Each can be switched on or off, and sent with or without the `QUEUE_END_MENTION` mention.
+
 ## Video mode
 
 | Variable                       | Default      | Purpose                                                                                                       |

@@ -343,12 +343,17 @@ export function escape(text: string) {
 /** What an agent is told when the last song in a queue starts. */
 export const lastSongMessage = "The last song in the queue is playing.";
 
+/** What the thread is told when only a few songs are left to play. */
+export function lowQueueMessage(left: number) {
+  return `Heads up: only ${left} song${left === 1 ? "" : "s"} left in the queue.`;
+}
+
 /**
- * What an agent is told when a queue runs out: the message, with `{recent}`
- * as the last songs played, after a mention of the agent.
+ * What the thread is told as a queue runs down: the message, with `{recent}`
+ * as the last songs played, after a mention of the agent when there is one.
  */
 export function queueEndText(
-  agentId: string,
+  agentId: string | undefined,
   recent: { title: string; artist?: string }[],
   message = "The queue has ended.",
 ) {
@@ -358,7 +363,7 @@ export function queueEndText(
         escape(track.artist ? `${track.artist} — ${track.title}` : track.title),
       )
       .join(", ") || "-";
-  return `<@${agentId}> ${message.replaceAll("{recent}", songs)}`;
+  return `${agentId ? `<@${agentId}> ` : ""}${message.replaceAll("{recent}", songs)}`;
 }
 
 /**

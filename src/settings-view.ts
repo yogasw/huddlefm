@@ -30,7 +30,11 @@ import type { Interaction } from "./slack-app.ts";
 import {
   anchorQuietChoices,
   huddleMixSources,
+  queueLowChoices,
+  queueStages,
   type HuddleMixSource,
+  type QueueStage,
+  type queueMessageSettings,
 } from "./store.ts";
 
 export {
@@ -325,11 +329,7 @@ export type SettingsViewOptions = {
       checkedAt?: number;
     };
     // What admins set for every channel's new sessions.
-    everyChannel?: {
-      anchor: boolean;
-      anchorQuietMinutes: number;
-      everyoneHost: boolean;
-    };
+    everyChannel?: EveryChannelView;
   };
   session: SessionSettingsView;
   user: UserSettingsView;
@@ -871,17 +871,79 @@ export function youtubeStatus(
   return `⏳ *${youtube.signedIn ? `Signed in${since}` : "Not signed in"}.* YouTube has not been checked yet.`;
 }
 
+type EveryChannelView = {
+  anchor: boolean;
+  anchorQuietMinutes: number;
+  everyoneHost: boolean;
+  queueMessages: ReturnType<typeof queueMessageSettings>;
+};
+
+const queueStageTitles: Record<QueueStage, { label: string; detail: string }> =
+  {
+    low: {
+      label: "Songs left",
+      detail: "Tells the thread when only a few songs are left to play.",
+    },
+    last: {
+      label: "Last song",
+      detail: "When the last song in the queue starts playing.",
+    },
+    ended: {
+      label: "Queue ended",
+      detail: "When nothing is playing any more.",
+    },
+  };
+
+// One queue message as a row with its menu: the state is in the text, since
+// a menu can't show which of its options is current.
+function queueStageRow(
+  stage: QueueStage,
+  settings: ReturnType<typeof queueMessageSettings>,
+) {
+  const current = settings[stage];
+  const left = stage === "low" ? settings.low.left : 0;
+  const { label, detail } = queueStageTitles[stage];
+  const state = [
+    current.enabled ? "✅ On" : "⏸ Off",
+    current.mention ? "🔔 Mentions the bot" : "🔕 No mention",
+    ...(stage === "low"
+      ? [`at ${left} song${left === 1 ? "" : "s"} left`]
+      : []),
+  ].join(" · ");
+  const option = (text: string, change: string) => ({
+    text: plain(text),
+    value: `queueStage:${stage}:${change}`,
+  });
+  return {
+    type: "section",
+    block_id: `every_channel_queue_${stage}`,
+    text: { type: "mrkdwn", text: `*${label}* · ${state}\n${detail}` },
+    accessory: {
+      type: "overflow",
+      action_id: everyChannelAction,
+      options: [
+        option(current.enabled ? "Turn off" : "Turn on", "toggle"),
+        option(
+          current.mention ? "Stop mentioning the bot" : "Mention the bot",
+          "mention",
+        ),
+        ...(stage === "low"
+          ? queueLowChoices.map((count) =>
+              option(`${count} song${count === 1 ? "" : "s"} left`, `${count}`),
+            )
+          : []),
+      ],
+    },
+  };
+}
+
 function anchorQuietLabel(minutes: number) {
   return minutes
     ? `After ${minutes} quiet minute${minutes === 1 ? "" : "s"}`
     : "Right away";
 }
 
-function everyChannelBlocks(
-  every:
-    | { anchor: boolean; anchorQuietMinutes: number; everyoneHost: boolean }
-    | undefined,
-) {
+function everyChannelBlocks(every: EveryChannelView | undefined) {
   if (!every) return [];
   const toggle = (
     setting: string,
@@ -924,6 +986,14 @@ function everyChannelBlocks(
         },
       },
     },
+    context(
+      "every_channel_queue_hint",
+      "Queue messages: tell the thread as the queue runs down. Open a row's ⋮ menu to switch it on or off, or to mention the bot so it can add more songs.",
+    ),
+    ...queueStages
+      .slice()
+      .reverse()
+      .map((stage) => queueStageRow(stage, every.queueMessages)),
     toggle(
       "everyone",
       "Everyone in the huddle is host (Everyone Is Host mode)",
