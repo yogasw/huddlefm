@@ -9240,6 +9240,11 @@ test("songs whose adder took their name off them name nobody", async () => {
     queued("c", { requesterId: "guest" }),
   );
   expect(named.requesterLabel).toBe("Added by Display guest");
+  const recommended = await Reflect.get(result.coordinator, "playMessage").call(
+    result.coordinator,
+    queued("r", { requesterId: "recommended" }),
+  );
+  expect(recommended.requesterLabel).toBe("Autoplay recommendation");
   Reflect.set(result.coordinator, "history", [
     anonymous,
     queued("b", { requesterId: "guest", status: "played" }),

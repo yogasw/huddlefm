@@ -5667,13 +5667,14 @@ export class Coordinator {
 
   private async playMessage(entry: Entry) {
     // A listener can take their name off the songs they added.
-    const requesterLabel = entry.automatic
-      ? "Autoplay recommendation"
-      : entry.requesterId === this.botUserId
-        ? undefined
-        : entry.requesterId
-          ? `Added by ${await this.slack.displayName(entry.requesterId)}`
-          : "Added by a listener";
+    const requesterLabel =
+      entry.automatic || entry.requesterId === recommendedBy
+        ? "Autoplay recommendation"
+        : entry.requesterId === this.botUserId
+          ? undefined
+          : entry.requesterId
+            ? `Added by ${await this.slack.displayName(entry.requesterId)}`
+            : "Added by a listener";
     const coverPath = entry.stream
       ? entry.stream.cover
       : entry.filePath && embeddedArtworkPath(entry.filePath);

@@ -133,6 +133,10 @@ type Body = {
   };
 };
 
+// What Slack's user IDs look like, as opposed to the labels the bot keeps in
+// the same place.
+const slackUserId = /^[UW][A-Z0-9]+$/;
+
 export type Interaction = ReturnType<typeof normalizeInteraction>;
 
 // Slack answers WebSocket pings but never sends application frames on an idle
@@ -604,6 +608,13 @@ export class SlackAppAdapter {
   private profile(userId: string) {
     const cached = this.names.get(userId);
     if (cached) return cached;
+    // Only Slack's own user IDs can be looked up: a label such as the one on
+    // a recommended song is shown as it is, without asking Slack.
+    if (!slackUserId.test(userId)) {
+      const names = Promise.resolve({ full: userId, display: userId });
+      this.names.set(userId, names);
+      return names;
+    }
     const names = this.web.users
       .info({ user: userId })
       .then((result) => {

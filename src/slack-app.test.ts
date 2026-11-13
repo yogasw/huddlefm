@@ -263,6 +263,11 @@ test("names a listener by display name, and keeps full names for records", async
   expect(await adapter.displayName("U4")).toBe("U4");
   failing = false;
   expect(await adapter.displayName("U4")).toBe("dee");
+  // A label that is not a Slack user ID is never looked up.
+  const before = calls;
+  expect(await adapter.displayName("recommended")).toBe("recommended");
+  expect(await adapter.userName("recommended")).toBe("recommended");
+  expect(calls).toBe(before);
 });
 
 describe("threadMessage", () => {
