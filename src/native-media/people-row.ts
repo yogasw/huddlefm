@@ -81,8 +81,10 @@ export function metrics({ width, height }: Size) {
     gap: Math.round(radius * 0.4),
     pad: Math.round(radius * 0.4),
     right: Math.round(height * 0.025),
-    // Above the progress bar and its shade.
-    bottom: Math.round(height * 0.07),
+    // As low as Slack's own tile sits on the share, which is about as far
+    // from the bottom edge as it is from the side; the progress bar's shade
+    // is faint enough to sit under the row.
+    bottom: Math.round(height * 0.018),
     font: Math.max(10, Math.round(radius * 0.72)),
     width,
     height,
