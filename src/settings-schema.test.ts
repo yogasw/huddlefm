@@ -64,6 +64,7 @@ test("fields follow the viewer's access and the session's mode", () => {
     "volume",
     "video_autoplay",
     "loop",
+    "ducking",
     "progress_bar",
     "anchor",
     "host",

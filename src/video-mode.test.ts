@@ -337,7 +337,11 @@ test("the host switches to video mode in Settings, and media shares the screen",
     type: "transition_mode",
     mode: "none",
   });
-  expect(result.media).toContainEqual({ type: "ducking_mode", mode: "off" });
+  // Ducking keeps pulling the video under the conversation.
+  expect(result.media).not.toContainEqual({
+    type: "ducking_mode",
+    mode: "off",
+  });
   expect(
     result.store.resumableSessions(Date.now(), 60_000).sessions[0],
   ).toMatchObject({
@@ -569,8 +573,26 @@ test("video mode leaves the music's autoplay and settings out of Settings", asyn
   expect(video).toContain("media_mode");
   expect(video).toContain("loop");
   expect(video).toContain("video_autoplay");
-  for (const hidden of ["display", "autoplay", "transition", "ducking"])
+  expect(video).toContain("ducking");
+  for (const hidden of ["display", "autoplay", "transition"])
     expect(video).not.toContain(hidden);
+  await result.coordinator.endFromSlack();
+});
+
+test("video mode ducks under the conversation, and Settings can change it", async () => {
+  const result = await setup();
+  await saveMode(result.coordinator, "video");
+  expect(
+    result.media.filter((message) => message.type === "ducking_mode").at(-1),
+  ).toEqual({ type: "ducking_mode", mode: "gentle" });
+  await press(result.coordinator, "save_settings", {
+    type: "view_submission",
+    state: { ducking: { mode: { selected_option: { value: "strong" } } } },
+  });
+  expect(result.media.at(-1)).toEqual({
+    type: "ducking_mode",
+    mode: "strong",
+  });
   await result.coordinator.endFromSlack();
 });
 

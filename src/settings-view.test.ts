@@ -449,9 +449,11 @@ test("the host picks the mode, and video mode leaves out the music's settings", 
   expect(block(video, "media_mode")?.element.initial_option.value).toBe(
     "video",
   );
-  for (const id of ["display", "autoplay", "transition", "ducking"])
+  for (const id of ["display", "autoplay", "transition"])
     expect(block(video, id)).toBeUndefined();
   expect(block(video, "loop")).toBeDefined();
+  // Ducking pulls a video under the conversation too.
+  expect(block(video, "ducking")).toBeDefined();
   expect(block(video, "anchor")).toBeDefined();
   // The progress bar is drawn over videos, so only video mode offers it.
   expect(block(music, "progress_bar")).toBeUndefined();
