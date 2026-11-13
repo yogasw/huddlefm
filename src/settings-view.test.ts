@@ -107,14 +107,14 @@ test("Settings opens on the session's tab, and a lone tab has no tab bar", () =>
   ).toBeDefined();
 });
 
-test("communism mode's Host tab only says so", () => {
+test("Everyone Is Host mode's Host tab only says so", () => {
   const base = options({
     access: { ...access, volume: true, configure: true, admin: true },
   });
   const communism = { ...base, session: { ...base.session, communism: true } };
   const host = settingsView({ ...communism, tab: "host" });
   expect(block(host, "communism_active")?.text.text).toContain(
-    "Communism mode is active",
+    "Everyone Is Host mode is active",
   );
   expect(block(host, "communism_actions")).toBeUndefined();
   expect(block(host, "host")).toBeUndefined();
@@ -134,7 +134,7 @@ test("communism mode's Host tab only says so", () => {
     elements: [
       {
         action_id: "start_communism",
-        confirm: { title: { text: "Start communism mode?" } },
+        confirm: { title: { text: "Start Everyone Is Host mode?" } },
       },
     ],
   });
@@ -555,6 +555,70 @@ test("marks whether YouTube plays with the cookies", () => {
   expect(youtubeStatus({ signedIn: false, invalid: false })).toStartWith("⏳");
 });
 
+test("the Channel tab offers the participant row to those who manage the channel", () => {
+  const channel = (participantRow?: string) =>
+    JSON.stringify(
+      settingsView(
+        options({
+          tab: "channel",
+          access: { ...access, saveDefaults: true, autoJoin: true },
+          channel: { saves: [], ...(participantRow ? { participantRow } : {}) },
+        } as never),
+      ).blocks,
+    );
+  expect(channel()).not.toContain("channel_participant_row");
+  const shown = channel("speaking");
+  expect(shown).toContain("Participants on video");
+  expect(shown).toContain('"action_id":"channel_participant_row"');
+  expect(shown).toContain(
+    '"initial_option":{"text":{"type":"plain_text","text":"Only who is speaking"},"value":"speaking"}',
+  );
+  for (const value of ["off", "all", "speaking", "stack"])
+    expect(shown).toContain(`"value":"${value}"`);
+});
+
+test("the Admin tab shows the webhook without its token", () => {
+  const admin = (webhook: any) =>
+    JSON.stringify(
+      settingsView(
+        options({
+          tab: "admin",
+          access: { ...access, botAdmin: true },
+          bot: {
+            admins: [],
+            youtube: { signedIn: false, invalid: false },
+            webhook,
+          },
+        }),
+      ).blocks,
+    );
+  const off = admin({ hasToken: false, events: [] });
+  expect(off).toContain("*Off.*");
+  expect(off).toContain('"action_id":"edit_webhook"');
+  expect(off).not.toContain("test_webhook");
+  const on = admin({
+    url: "https://hooks.example.com/secret/path?key=1",
+    hasToken: true,
+    events: ["queue.last", "session.ended"],
+    updatedBy: "U01TESTADMIN",
+    updatedAt: 1_700_000_000,
+  });
+  expect(on).toContain("hooks.example.com");
+  expect(on).not.toContain("secret/path");
+  expect(on).toContain("🔐 token saved");
+  expect(on).toContain("The last song in the queue started");
+  expect(on).toContain("Someone ended the session");
+  expect(on).toContain('"action_id":"test_webhook"');
+  expect(on).toContain('"action_id":"remove_webhook"');
+  expect(
+    admin({
+      url: "https://hooks.example.com/a",
+      hasToken: false,
+      events: [],
+    }),
+  ).toContain("No events are ticked");
+});
+
 test("switches what every channel's new sessions start with", () => {
   const view = settingsView(
     options({
@@ -567,6 +631,11 @@ test("switches what every channel's new sessions start with", () => {
           anchor: true,
           anchorQuietMinutes: 2,
           everyoneHost: false,
+          queueMessages: {
+            low: { enabled: false, mention: true, left: 2 },
+            last: { enabled: true, mention: false },
+            ended: { enabled: true, mention: true },
+          },
         },
       },
     }),
@@ -580,4 +649,39 @@ test("switches what every channel's new sessions start with", () => {
   expect(text).toContain('"value":"anchor:off"');
   expect(text).toContain("⬜ Everyone in the huddle is host");
   expect(text).toContain('"value":"everyone:on"');
+  // Each queue message is a row with its state in the text and a menu.
+  const row = (stage: string) =>
+    (view.blocks as { block_id?: string; text?: { text: string } }[]).find(
+      (block) => block.block_id === `every_channel_queue_${stage}`,
+    ) as {
+      text: { text: string };
+      accessory: { type: string; options: any[] };
+    };
+  expect(row("low").text.text).toContain("⏸ Off · 🔔 Mentions the bot");
+  expect(row("low").text.text).toContain("at 2 songs left");
+  expect(row("low").accessory.type).toBe("overflow");
+  expect(row("low").accessory.options.map((option) => option.value)).toEqual([
+    "queueStage:low:toggle",
+    "queueStage:low:mention",
+    "queueStage:low:1",
+    "queueStage:low:2",
+    "queueStage:low:3",
+  ]);
+  expect(row("last").text.text).toContain("✅ On · 🔕 No mention");
+  expect(
+    row("last").accessory.options.map((option) => option.text.text),
+  ).toEqual(["Turn off", "Mention the bot"]);
+  expect(row("ended").accessory.options).toHaveLength(2);
+  const order = (view.blocks as { block_id?: string }[])
+    .map((block) => block.block_id)
+    .filter(
+      (id) =>
+        id?.startsWith("every_channel_queue_") &&
+        id !== "every_channel_queue_hint",
+    );
+  expect(order).toEqual([
+    "every_channel_queue_ended",
+    "every_channel_queue_last",
+    "every_channel_queue_low",
+  ]);
 });

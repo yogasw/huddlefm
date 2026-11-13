@@ -28,10 +28,26 @@ import {
 } from "./settings-schema.ts";
 import type { Interaction } from "./slack-app.ts";
 import {
+  peopleTemplates,
+  type PeopleTemplate,
+} from "./native-media/video-format.ts";
+import {
   anchorQuietChoices,
   huddleMixSources,
+  queueLowChoices,
+  queueStages,
   type HuddleMixSource,
+  type QueueStage,
+  type queueMessageSettings,
+  type WebhookEvent,
 } from "./store.ts";
+import {
+  editWebhookAction,
+  removeWebhookAction,
+  testWebhookAction,
+  webhookEventLabels,
+  webhookHost,
+} from "./webhook.ts";
 
 export {
   scrobbleServices,
@@ -118,7 +134,7 @@ const tabLabels: Record<SettingsTab, string> = {
   host: "Host",
   admin: "Admin",
 };
-// Communism mode's session is everyone's.
+// Everyone Is Host mode's session is everyone's.
 function tabLabel(tab: SettingsTab, communism: boolean) {
   return communism && tab === "session" ? "Our session" : tabLabels[tab];
 }
@@ -325,10 +341,14 @@ export type SettingsViewOptions = {
       checkedAt?: number;
     };
     // What admins set for every channel's new sessions.
-    everyChannel?: {
-      anchor: boolean;
-      anchorQuietMinutes: number;
-      everyoneHost: boolean;
+    everyChannel?: EveryChannelView;
+    // The webhook admins set, if any: the token is never part of this.
+    webhook?: {
+      url?: string;
+      hasToken: boolean;
+      events: WebhookEvent[];
+      updatedBy?: string;
+      updatedAt?: number;
     };
   };
   session: SessionSettingsView;
@@ -342,6 +362,9 @@ export type SettingsViewOptions = {
     saves: ChannelSaveView[];
     // Who turned on joining every new Huddle in the channel, when it is on.
     autoJoin?: { enabledBy: string; enabledAt: number };
+    // How the channel's videos show who is in the huddle, for those who
+    // manage the channel; absent for everyone else.
+    participantRow?: PeopleTemplate;
   };
   integrations: { userId: string; requestId: string; permissions: string[] }[];
 };
@@ -418,11 +441,11 @@ export function settingsView(options: SettingsViewOptions) {
     tab === "host" && access.admin && !options.session.communism,
     { type: "divider" },
     actions("communism_actions", [
-      button("start_communism", plain("Start communism mode"), {
+      button("start_communism", plain("Start Everyone Is Host mode"), {
         style: "danger",
         value: options.sessionId,
         confirm: confirm(
-          "Start communism mode?",
+          "Start Everyone Is Host mode?",
           "Everyone in the huddle will be able to do everything, and nobody will be able to take over as host. It can't be turned off: it lasts until the session ends.",
           "Start",
         ),
@@ -772,6 +795,30 @@ function channelBlocks(options: SettingsViewOptions) {
       },
     ),
     ...when(
+      options.channel.participantRow,
+      { type: "header", text: plain("Participants on video") },
+      {
+        type: "section",
+        block_id: "channel_participant_row",
+        text: {
+          type: "mrkdwn",
+          text: "Show who is in the huddle over a playing video, with a green ring around whoever is speaking and a mark on whoever is muted.",
+        },
+        accessory: {
+          type: "static_select",
+          action_id: participantRowAction,
+          options: peopleTemplates.map((template) => ({
+            text: plain(peopleLabels[template]),
+            value: template,
+          })),
+          initial_option: {
+            text: plain(peopleLabels[options.channel.participantRow ?? "off"]),
+            value: options.channel.participantRow ?? "off",
+          },
+        },
+      },
+    ),
+    ...when(
       access.saveDefaults,
       { type: "header", text: plain("Channel defaults") },
       context(
@@ -785,7 +832,7 @@ function channelBlocks(options: SettingsViewOptions) {
           value,
           confirm: confirm(
             "Save channel defaults?",
-            `New sessions in this channel will start with the settings and permissions shown in Settings, including changes not saved yet and the mode (music or video)${options.session.communism ? ", and in communism mode, which can't be turned off" : ""}.`,
+            `New sessions in this channel will start with the settings and permissions shown in Settings, including changes not saved yet and the mode (music or video)${options.session.communism ? ", and in Everyone Is Host mode, which can't be turned off" : ""}.`,
             "Save",
           ),
         }),
@@ -852,6 +899,14 @@ export function submittedScrobbleServices(
 export const uploadYouTubeCookiesAction = "upload_youtube_cookies";
 // The Admin tab's switches for every channel, valued `<setting>:on|off`.
 export const everyChannelAction = "every_channel_default";
+export const participantRowAction = "channel_participant_row";
+
+const peopleLabels: Record<PeopleTemplate, string> = {
+  off: "Hidden",
+  all: "Everyone in a row",
+  speaking: "Only who is speaking",
+  stack: "Everyone stacked close",
+};
 
 // The cookies' state with a mark: ✅ YouTube plays, ❌ it does not, ⏳ not
 // checked yet.
@@ -871,17 +926,79 @@ export function youtubeStatus(
   return `⏳ *${youtube.signedIn ? `Signed in${since}` : "Not signed in"}.* YouTube has not been checked yet.`;
 }
 
+type EveryChannelView = {
+  anchor: boolean;
+  anchorQuietMinutes: number;
+  everyoneHost: boolean;
+  queueMessages: ReturnType<typeof queueMessageSettings>;
+};
+
+const queueStageTitles: Record<QueueStage, { label: string; detail: string }> =
+  {
+    low: {
+      label: "Songs left",
+      detail: "Tells the thread when only a few songs are left to play.",
+    },
+    last: {
+      label: "Last song",
+      detail: "When the last song in the queue starts playing.",
+    },
+    ended: {
+      label: "Queue ended",
+      detail: "When nothing is playing any more.",
+    },
+  };
+
+// One queue message as a row with its menu: the state is in the text, since
+// a menu can't show which of its options is current.
+function queueStageRow(
+  stage: QueueStage,
+  settings: ReturnType<typeof queueMessageSettings>,
+) {
+  const current = settings[stage];
+  const left = stage === "low" ? settings.low.left : 0;
+  const { label, detail } = queueStageTitles[stage];
+  const state = [
+    current.enabled ? "✅ On" : "⏸ Off",
+    current.mention ? "🔔 Mentions the bot" : "🔕 No mention",
+    ...(stage === "low"
+      ? [`at ${left} song${left === 1 ? "" : "s"} left`]
+      : []),
+  ].join(" · ");
+  const option = (text: string, change: string) => ({
+    text: plain(text),
+    value: `queueStage:${stage}:${change}`,
+  });
+  return {
+    type: "section",
+    block_id: `every_channel_queue_${stage}`,
+    text: { type: "mrkdwn", text: `*${label}* · ${state}\n${detail}` },
+    accessory: {
+      type: "overflow",
+      action_id: everyChannelAction,
+      options: [
+        option(current.enabled ? "Turn off" : "Turn on", "toggle"),
+        option(
+          current.mention ? "Stop mentioning the bot" : "Mention the bot",
+          "mention",
+        ),
+        ...(stage === "low"
+          ? queueLowChoices.map((count) =>
+              option(`${count} song${count === 1 ? "" : "s"} left`, `${count}`),
+            )
+          : []),
+      ],
+    },
+  };
+}
+
 function anchorQuietLabel(minutes: number) {
   return minutes
     ? `After ${minutes} quiet minute${minutes === 1 ? "" : "s"}`
     : "Right away";
 }
 
-function everyChannelBlocks(
-  every:
-    | { anchor: boolean; anchorQuietMinutes: number; everyoneHost: boolean }
-    | undefined,
-) {
+function everyChannelBlocks(every: EveryChannelView | undefined) {
   if (!every) return [];
   const toggle = (
     setting: string,
@@ -924,9 +1041,17 @@ function everyChannelBlocks(
         },
       },
     },
+    context(
+      "every_channel_queue_hint",
+      "Queue messages: tell the thread as the queue runs down. Open a row's ⋮ menu to switch it on or off, or to mention the bot so it can add more songs.",
+    ),
+    ...queueStages
+      .slice()
+      .reverse()
+      .map((stage) => queueStageRow(stage, every.queueMessages)),
     toggle(
       "everyone",
-      "Everyone in the huddle is host (communism mode)",
+      "Everyone in the huddle is host (Everyone Is Host mode)",
       every.everyoneHost,
       "every_channel_everyone",
     ),
@@ -934,6 +1059,47 @@ function everyChannelBlocks(
       "every_channel_hint",
       "For this session and new ones. A channel's own saved defaults still win for its new sessions. Waiting for quiet minutes keeps the player from jumping between people's messages while they talk.",
     ),
+  ];
+}
+
+function webhookBlocks(
+  webhook: NonNullable<SettingsViewOptions["bot"]>["webhook"],
+) {
+  if (!webhook) return [];
+  const set = Boolean(webhook.url);
+  return [
+    { type: "header", text: plain("Webhook") },
+    {
+      type: "section",
+      block_id: "webhook_status",
+      text: {
+        type: "mrkdwn",
+        text: set
+          ? `*Sending to* \`${webhookHost(webhook.url!)}\` · ${webhook.hasToken ? "🔐 token saved" : "no token"}\n${
+              webhook.events.length
+                ? webhook.events
+                    .map((event) => `• ${webhookEventLabels[event]}`)
+                    .join("\n")
+                : "No events are ticked, so nothing is sent."
+            }${webhook.updatedBy ? `\nSet by <@${webhook.updatedBy}>${webhook.updatedAt ? ` ${slackDate(webhook.updatedAt)}` : ""}.` : ""}`
+          : "*Off.* Add an address to be told when the bot joins or leaves a huddle, when the queue runs low or out, and when a session ends.",
+      },
+      accessory: button(editWebhookAction, plain(set ? "Edit" : "Set up")),
+    },
+    ...(set
+      ? [
+          actions("webhook_actions", [
+            button(testWebhookAction, plain("Send a test")),
+            button(removeWebhookAction, plain("Remove"), {
+              confirm: confirm(
+                "Remove the webhook?",
+                "Nothing will be sent to it any more, and its token is deleted.",
+                "Remove",
+              ),
+            }),
+          ]),
+        ]
+      : []),
   ];
 }
 
@@ -953,6 +1119,7 @@ function adminBlocks(options: SettingsViewOptions) {
       "Set by ADMIN_USER_IDS. Admins are hosts and channel managers everywhere.",
     ),
     ...everyChannelBlocks(bot.everyChannel),
+    ...webhookBlocks(bot.webhook),
     { type: "header", text: plain("YouTube cookies") },
     {
       type: "section",
@@ -966,13 +1133,13 @@ function adminBlocks(options: SettingsViewOptions) {
 }
 
 function hostBlocks(options: SettingsViewOptions, form: FormState) {
-  // Communism mode has no host to change or permissions to hand out, and
+  // Everyone Is Host mode has no host to change or permissions to hand out, and
   // lasts until the session ends; the tab only says so.
   return [
     ...when(
       options.session.communism,
       section(
-        "☭ *Communism mode is active.* Everyone in the huddle can do everything, and nobody can take over as host, until the session ends.",
+        "👥 *Everyone Is Host mode is active.* Everyone in the huddle can do everything, and nobody can take over as host, until the session ends.",
         "communism_active",
       ),
     ),

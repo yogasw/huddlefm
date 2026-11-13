@@ -104,4 +104,20 @@ describe("video thread", () => {
     },
     15_000,
   );
+
+  test("takes who is in the huddle, even with a photo it cannot read", async () => {
+    const { video, logs } = thread();
+    try {
+      video.setPeopleRow("all");
+      video.setPeople([
+        { id: "U0TEST1", name: "Ada Lovelace" },
+        { id: "U0TEST2", name: "Bram", image: "bm90IGEgcGhvdG8=" },
+      ]);
+      video.setPeopleState(["U0TEST1"], ["U0TEST2"]);
+      await Bun.sleep(300);
+      expect(logs).not.toContain("native_video_worker_died");
+    } finally {
+      await video.stop();
+    }
+  });
 });

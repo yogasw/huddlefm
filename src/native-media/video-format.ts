@@ -1,6 +1,10 @@
 // What the video tile is, shared by the thread that draws and encodes it and
 // the one that sends it, which must not load Skia just for these.
 
+/** How the people in a huddle are drawn over a playing video. */
+export const peopleTemplates = ["off", "all", "speaking", "stack"] as const;
+export type PeopleTemplate = (typeof peopleTemplates)[number];
+
 /** The card is drawn and sent at this size, about half the cost of 720. */
 export const cardSize = 540;
 /** The card as the screen share shows it: 16:9 at the card's height. */

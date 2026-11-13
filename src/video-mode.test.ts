@@ -84,6 +84,8 @@ async function setup(
     },
     userName: async (userId: string) => `Name ${userId}`,
     displayName: async (userId: string) => `Name ${userId}`,
+    profilePhoto: async (userId: string) =>
+      userId === "host" ? "cGhvdG8=" : undefined,
     dm: async (...args: unknown[]) => {
       dms.push(args);
       return { channelId: "D1", ts: `dm-${dms.length}` };
@@ -382,6 +384,97 @@ test("a channel's video mode waits when the server's video slots are taken", asy
   });
   expect(result.coordinator.videoMode).toBeFalse();
   expect(result.media).not.toContainEqual({ type: "video_mode", on: true });
+  await result.coordinator.endFromSlack();
+});
+
+const peopleMessages = (media: any[]) =>
+  media.filter((message) => message.type === "people");
+const peopleRows = (media: any[]) =>
+  media
+    .filter((message) => message.type === "people_row")
+    .map((message) => message.template);
+
+test("a channel manager picks how videos show who is in the huddle", async () => {
+  const result = await setup();
+  Reflect.set(
+    result.coordinator,
+    "managesChannel",
+    (userId: string) => userId === "host",
+  );
+  await saveMode(result.coordinator, "video");
+  // Hidden unless chosen: nothing is said to the media process.
+  expect(peopleRows(result.media)).toEqual([]);
+  await press(result.coordinator, "channel_participant_row", {
+    value: "all",
+  });
+  expect(result.store.channelDefaults("channel")?.participantRow).toBe("all");
+  expect(peopleRows(result.media)).toEqual(["all"]);
+  await until(() => peopleMessages(result.media).length === 1);
+  expect(peopleMessages(result.media)[0].people).toEqual([
+    { id: "host", name: "Name host", image: "cGhvdG8=" },
+    { id: "guest", name: "Name guest" },
+  ]);
+  expect(result.audit).toContainEqual([
+    "channel_participant_row.changed",
+    "host",
+    expect.objectContaining({ template: "all" }),
+  ]);
+  await press(result.coordinator, "channel_participant_row", {
+    value: "off",
+  });
+  expect(peopleRows(result.media)).toEqual(["all", "off"]);
+  await press(result.coordinator, "channel_participant_row", {
+    value: "bogus",
+  });
+  expect(result.store.channelDefaults("channel")?.participantRow).toBe("off");
+  await result.coordinator.endFromSlack();
+});
+
+test("only a channel manager changes it, and music mode never shows it", async () => {
+  const result = await setup();
+  await saveMode(result.coordinator, "video");
+  await press(result.coordinator, "channel_participant_row", {
+    value: "all",
+    userId: "guest",
+  });
+  expect(result.store.channelDefaults("channel")).toBeUndefined();
+  expect(peopleRows(result.media)).toEqual([]);
+  Reflect.set(result.coordinator, "managesChannel", () => true);
+  await saveMode(result.coordinator, "music");
+  await press(result.coordinator, "channel_participant_row", {
+    value: "speaking",
+  });
+  expect(result.store.channelDefaults("channel")?.participantRow).toBe(
+    "speaking",
+  );
+  expect(peopleRows(result.media)).toEqual([]);
+  await saveMode(result.coordinator, "video");
+  expect(peopleRows(result.media)).toEqual(["speaking"]);
+  await saveMode(result.coordinator, "music");
+  expect(peopleRows(result.media)).toEqual(["speaking", "off"]);
+  await result.coordinator.endFromSlack();
+});
+
+test("a session in a channel with the row on shows it from the start, and follows who joins", async () => {
+  const result = await setup({ channelDefaults: { participantRow: "stack" } });
+  await saveMode(result.coordinator, "video");
+  expect(peopleRows(result.media)).toEqual(["stack"]);
+  await until(() => peopleMessages(result.media).length >= 1);
+  const before = peopleMessages(result.media).length;
+  result.coordinator.memberJoined("newcomer");
+  await until(() => peopleMessages(result.media).length > before);
+  expect(
+    peopleMessages(result.media)
+      .at(-1)
+      .people.map((person: any) => person.id),
+  ).toEqual(["host", "guest", "newcomer"]);
+  result.coordinator.memberLeft("guest");
+  await until(
+    () =>
+      !peopleMessages(result.media)
+        .at(-1)
+        .people.some((person: any) => person.id === "guest"),
+  );
   await result.coordinator.endFromSlack();
 });
 

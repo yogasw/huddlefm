@@ -1,4 +1,5 @@
 import type { Lyric } from "@braccato/core";
+import type { PeopleTemplate } from "./video-format.ts";
 import type { LyricsCredits } from "./lyrics-view.ts";
 import { UnitRing } from "./unit-ring.ts";
 import type { CardProgress, DisplayMode } from "./video-card.ts";
@@ -7,6 +8,9 @@ import type { VideoSource } from "./video-player.ts";
 
 /** What the card says when nothing is playing. */
 export type IdleText = { title: string; subtitle: string };
+
+/** Someone in the huddle, as the worker is told: a photo comes as base64. */
+export type PersonMessage = { id: string; name: string; image?: string };
 
 /** What the audio thread tells the video worker. */
 export type ToVideoWorker =
@@ -30,6 +34,9 @@ export type ToVideoWorker =
   | { type: "share_source"; source: VideoSource | undefined }
   | { type: "captions"; on: boolean }
   | { type: "progress_bar"; on: boolean }
+  | { type: "people_row"; template: PeopleTemplate }
+  | { type: "people"; people: PersonMessage[] }
+  | { type: "people_state"; speaking: string[]; muted: string[] }
   | { type: "share_keyframe" }
   | { type: "stop" };
 
@@ -88,7 +95,16 @@ export class VideoThread {
     source?: VideoSource;
     captions: boolean;
     progressBar: boolean;
-  } = { video: false, share: false, captions: false, progressBar: true };
+    peopleRow: PeopleTemplate;
+    people?: Extract<ToVideoWorker, { type: "people" }>;
+    peopleState?: Extract<ToVideoWorker, { type: "people_state" }>;
+  } = {
+    video: false,
+    share: false,
+    captions: false,
+    progressBar: true,
+    peopleRow: "off",
+  };
 
   constructor(
     private lyricsOffset: number,
@@ -189,6 +205,25 @@ export class VideoThread {
     this.send({ type: "progress_bar", on });
   }
 
+  /** How the people in the huddle show over a playing video, or not at all. */
+  setPeopleRow(template: PeopleTemplate) {
+    if (template === this.state.peopleRow) return;
+    this.state.peopleRow = template;
+    this.send({ type: "people_row", template });
+  }
+
+  /** Who is in the huddle, with their names and photos. */
+  setPeople(people: PersonMessage[]) {
+    this.state.people = { type: "people", people };
+    this.send(this.state.people);
+  }
+
+  /** Who is speaking and who is muted, by Slack user. */
+  setPeopleState(speaking: string[], muted: string[]) {
+    this.state.peopleState = { type: "people_state", speaking, muted };
+    this.send(this.state.peopleState);
+  }
+
   requestShareKeyframe() {
     this.send({ type: "share_keyframe" });
   }
@@ -248,6 +283,9 @@ export class VideoThread {
       source,
       captions,
       progressBar,
+      peopleRow,
+      people,
+      peopleState,
     } = this.state;
     if (mode) worker.postMessage({ type: "display_mode", mode });
     if (track) worker.postMessage(track);
@@ -255,6 +293,10 @@ export class VideoThread {
     if (track && lyrics) worker.postMessage(lyrics);
     if (captions) worker.postMessage({ type: "captions", on: true });
     if (!progressBar) worker.postMessage({ type: "progress_bar", on: false });
+    if (peopleRow !== "off")
+      worker.postMessage({ type: "people_row", template: peopleRow });
+    if (people) worker.postMessage(people);
+    if (peopleState) worker.postMessage(peopleState);
     if (source) worker.postMessage({ type: "share_source", source });
     if (video) worker.postMessage({ type: "video", on: true });
     if (share) worker.postMessage({ type: "share", on: true });

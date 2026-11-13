@@ -145,6 +145,7 @@ function setup(
       setEndMessage: () => {},
       sessionSaves: () => [],
       channelDefaults: () => undefined,
+      webhookSettings: () => undefined,
       channelDefaultsSaved: () => undefined,
       channelAutoJoin: () => undefined,
       setChannelAutoJoin: () => {},
@@ -1714,7 +1715,7 @@ test("first current participant claims a vacant host role", async () => {
   await test.coordinator.endFromSlack();
 });
 
-test("communism mode lets everyone do everything but take over as host", async () => {
+test("Everyone Is Host mode lets everyone do everything but take over as host", async () => {
   const test = setup();
   await test.coordinator.start();
   const start = (userId: string) =>
@@ -1726,7 +1727,9 @@ test("communism mode lets everyone do everything but take over as host", async (
   // Only the host can start it.
   await start("guest");
   expect(test.sessions).not.toContainEqual({ communism: true });
-  expect(test.ephemeral.at(-1)).toBe("Only the host can start communism mode.");
+  expect(test.ephemeral.at(-1)).toBe(
+    "Only the host can start Everyone Is Host mode.",
+  );
   expect(await test.coordinator.agentStatus("guest")).toMatchObject({
     yourCapabilities: ["add", "remove-own"],
   });
@@ -1739,10 +1742,10 @@ test("communism mode lets everyone do everything but take over as host", async (
     { sessionId: test.coordinator.id },
   ]);
   const player = JSON.stringify(test.updates.at(-1));
-  expect(player).toContain("☭ Communism mode");
+  expect(player).toContain("👥 Everyone Is Host");
   expect(player).not.toContain("Host: <@host>");
   expect(await test.coordinator.agentStatus("guest")).toMatchObject({
-    yourCapabilities: "all (communism mode)",
+    yourCapabilities: "all (Everyone Is Host mode)",
   });
   // Everything but the host and the permissions it does without.
   expect(
@@ -1774,7 +1777,7 @@ test("communism mode lets everyone do everything but take over as host", async (
       communism: false,
     }),
   ).toMatchObject({ ok: true, communism: true });
-  expect(JSON.stringify(test.updates.at(-1))).toContain("☭ Communism mode");
+  expect(JSON.stringify(test.updates.at(-1))).toContain("👥 Everyone Is Host");
   await test.coordinator.endFromSlack();
 });
 
@@ -1790,7 +1793,7 @@ test("a guest passing communism off to the agent is not refused", async () => {
   await test.coordinator.endFromSlack();
 });
 
-test("a client mod's host can start communism mode", async () => {
+test("a client mod's host can start Everyone Is Host mode", async () => {
   const test = setup();
   await test.coordinator.start();
   const command = (userId: string) =>
@@ -1952,6 +1955,436 @@ test("mentions the agent when the last song starts and again when the queue ends
   await until(() => mentions("The queue has ended.").length === 1);
   expect(mentions("The last song in the queue is playing.")).toHaveLength(1);
   await result.coordinator.endFromSlack();
+});
+
+const queueTracks = {
+  resolve: async (value: string) => ({
+    sourceInput: `https://example.com/${value}`,
+    canonicalUrl: `https://example.com/${value}`,
+    sourceId: value,
+    title: value,
+    artist: "Artist",
+  }),
+  prepare: async (_track: unknown, _directory: string, id: string) =>
+    `${id}.opus`,
+} as unknown as TrackCatalog;
+
+// Runs a queue of the given songs to its end, returning what was posted.
+async function playQueue(
+  queueMessages: NonNullable<
+    Parameters<Store["setChannelDefaults"]>[1]["queueMessages"]
+  >,
+  songs: string[],
+  mention?: string,
+) {
+  const store = new Store(":memory:");
+  store.setChannelDefaults("*", { queueMessages }, "admin");
+  const result = setup(
+    queueTracks,
+    {
+      aloneMs: 60_000,
+      idleMs: 600_000,
+      pausedMs: 600_000,
+      warningMs: 120_000,
+      queueEndMention: mention,
+    },
+    undefined,
+    undefined,
+    store,
+  );
+  await result.coordinator.start();
+  for (const value of songs)
+    await result.coordinator.action({
+      type: "block_actions",
+      userId: "host",
+      actionId: "add_track_to_queue",
+      value,
+      channelId: "channel",
+      messageTs: "1",
+      triggerId: "",
+      metadata: "",
+      state: {},
+    });
+  const played = new Set<string>();
+  for (let index = 0; index < songs.length; index++) {
+    await until(() =>
+      result.media.some(
+        (message) =>
+          (message as { type?: string; entryId?: string }).type === "play" &&
+          !played.has((message as { entryId: string }).entryId),
+      ),
+    );
+    const play = result.media.find(
+      (message) =>
+        (message as { type?: string }).type === "play" &&
+        !played.has((message as { entryId: string }).entryId),
+    ) as { entryId: string };
+    played.add(play.entryId);
+    await result.coordinator.mediaEvent("track_ended", {
+      entryId: play.entryId,
+    });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const texts = result.posted.map((post) => String((post as unknown[])[2]));
+  await result.coordinator.endFromSlack();
+  return texts;
+}
+
+test("the running-low notice goes out once as the queue falls to the chosen number", async () => {
+  const texts = await playQueue(
+    { low: { enabled: true, left: 1 } },
+    ["a", "b", "c"],
+    "U01TESTAGENT",
+  );
+  const low = texts.filter((text) => text.includes("Heads up: only"));
+  expect(low).toEqual([
+    "<@U01TESTAGENT> Heads up: only 1 song left in the queue.",
+  ]);
+  // The last song also played alone while the others were still being added.
+  expect(
+    texts.filter((text) => text.includes("The last song in the queue")),
+  ).toHaveLength(2);
+});
+
+test("the running-low notice is off until an admin turns it on", async () => {
+  const texts = await playQueue({}, ["a", "b", "c"], "U01TESTAGENT");
+  expect(texts.some((text) => text.includes("Heads up"))).toBeFalse();
+});
+
+test("a stage without a mention tells the thread without calling the bot", async () => {
+  const texts = await playQueue(
+    { last: { mention: false }, ended: { mention: false } },
+    ["a"],
+  );
+  expect(texts).toContain("The last song in the queue is playing.");
+  expect(texts).toContain("The queue has ended.");
+});
+
+test("a stage that is switched off says nothing", async () => {
+  const texts = await playQueue(
+    { last: { enabled: false }, ended: { enabled: false } },
+    ["a"],
+    "U01TESTAGENT",
+  );
+  expect(texts.some((text) => text.includes("<@U01TESTAGENT>"))).toBeFalse();
+});
+
+// Runs a queue to its end with a webhook listening for the given events,
+// returning what it was sent.
+async function playWithWebhook(events: string[], songs: string[]) {
+  const store = new Store(":memory:");
+  store.setWebhookSettings(
+    {
+      url: "https://hooks.example.com/a",
+      token: "test-token",
+      events: events as never,
+    },
+    "admin",
+  );
+  const sent: { url: string; auth: string; body: any }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string, init: any) => {
+    sent.push({
+      url,
+      auth: init.headers.authorization,
+      body: JSON.parse(init.body),
+    });
+    return { status: 200 };
+  }) as never;
+  try {
+    const result = setup(
+      queueTracks,
+      {
+        aloneMs: 60_000,
+        idleMs: 600_000,
+        pausedMs: 600_000,
+        warningMs: 120_000,
+      },
+      undefined,
+      undefined,
+      store,
+    );
+    await result.coordinator.start();
+    for (const value of songs)
+      await result.coordinator.action({
+        type: "block_actions",
+        userId: "host",
+        actionId: "add_track_to_queue",
+        value,
+        channelId: "channel",
+        messageTs: "1",
+        triggerId: "",
+        metadata: "",
+        state: {},
+      });
+    const played = new Set<string>();
+    for (let index = 0; index < songs.length; index++) {
+      await until(() =>
+        result.media.some(
+          (message) =>
+            (message as { type?: string }).type === "play" &&
+            !played.has((message as { entryId: string }).entryId),
+        ),
+      );
+      const play = result.media.find(
+        (message) =>
+          (message as { type?: string }).type === "play" &&
+          !played.has((message as { entryId: string }).entryId),
+      ) as { entryId: string };
+      played.add(play.entryId);
+      await result.coordinator.mediaEvent("track_ended", {
+        entryId: play.entryId,
+      });
+    }
+    await result.coordinator.endFromSlack();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  return sent;
+}
+
+test("the webhook hears only the events it ticked, with the song and queue", async () => {
+  const sent = await playWithWebhook(
+    ["huddle.joined", "queue.last", "queue.ended", "huddle.left"],
+    ["a", "b"],
+  );
+  const names = sent.map((call) => call.body.event);
+  expect(names[0]).toBe("huddle.joined");
+  expect(names).toContain("queue.last");
+  expect(names).toContain("queue.ended");
+  expect(names.at(-1)).toBe("huddle.left");
+  expect(names).not.toContain("queue.low");
+  expect(names).not.toContain("session.ended");
+  for (const call of sent) {
+    expect(call.url).toBe("https://hooks.example.com/a");
+    expect(call.auth).toBe("Bearer test-token");
+    expect(call.body.channelId).toBe("channel");
+    expect(call.body.sessionId).toBeString();
+    expect(Date.parse(call.body.at)).toBeGreaterThan(0);
+  }
+  // The first song also played alone while the second was being added.
+  const last = sent.findLast((call) => call.body.event === "queue.last")!.body;
+  expect(last.current).toEqual({ title: "b", artist: "Artist" });
+  expect(last.queueLength).toBe(0);
+  expect(last.recent).toEqual([{ title: "a", artist: "Artist" }]);
+  expect(sent.at(-1)!.body.reason).toBe("huddle ended");
+});
+
+test("the webhook hears the running-low point and a bot leaving by itself", async () => {
+  const sent = await playWithWebhook(["queue.low"], ["a", "b", "c"]);
+  expect(sent.map((call) => call.body.event)).toEqual(["queue.low"]);
+  expect(sent[0]!.body.queueLength).toBe(1);
+});
+
+test("a webhook with nothing ticked or nothing saved sends nothing", async () => {
+  expect(await playWithWebhook([], ["a"])).toEqual([]);
+});
+
+test("someone ending the session is told apart from the bot leaving", async () => {
+  const store = new Store(":memory:");
+  store.setWebhookSettings(
+    {
+      url: "https://hooks.example.com/a",
+      token: "",
+      events: ["huddle.left", "session.ended"],
+    },
+    "admin",
+  );
+  const run = async (reason: string) => {
+    const sent: any[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: any) => {
+      sent.push(JSON.parse(init.body));
+      return { status: 200 };
+    }) as never;
+    try {
+      const result = setup(
+        queueTracks,
+        {
+          aloneMs: 60_000,
+          idleMs: 600_000,
+          pausedMs: 600_000,
+          warningMs: 120_000,
+        },
+        undefined,
+        undefined,
+        store,
+      );
+      await result.coordinator.start();
+      await Reflect.apply(
+        Reflect.get(result.coordinator, "end"),
+        result.coordinator,
+        [undefined, reason],
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    return sent.map((body) => [body.event, body.reason]);
+  };
+  expect(await run("ended by agent")).toEqual([
+    ["session.ended", "ended by agent"],
+  ]);
+  expect(await run("alone timeout")).toEqual([
+    ["huddle.left", "alone timeout"],
+  ]);
+});
+
+const addSong = (
+  coordinator: { action: (interaction: any) => Promise<void> },
+  value: string,
+) =>
+  coordinator.action({
+    type: "block_actions",
+    userId: "host",
+    actionId: "add_track_to_queue",
+    value,
+    channelId: "channel",
+    messageTs: "1",
+    triggerId: "",
+    metadata: "",
+    state: {},
+  });
+
+const unfinishedTimeouts = {
+  aloneMs: 60_000,
+  idleMs: 600_000,
+  pausedMs: 600_000,
+  warningMs: 120_000,
+};
+
+test("the bot leaving on its own keeps the rest of the queue for the channel", async () => {
+  const store = new Store(":memory:");
+  const result = setup(
+    queueTracks,
+    unfinishedTimeouts,
+    undefined,
+    undefined,
+    store,
+  );
+  await result.coordinator.start();
+  await addSong(result.coordinator, "a");
+  await addSong(result.coordinator, "b");
+  await Reflect.apply(
+    Reflect.get(result.coordinator, "end"),
+    result.coordinator,
+    [undefined, "alone timeout"],
+  );
+  const saves = store.sessionSaves([{ type: "channel", id: "channel" }]);
+  expect(saves).toHaveLength(1);
+  expect(saves[0]!.name).toBe("Left unfinished");
+  expect(saves[0]!.tracks.map((track) => track.title)).toEqual(["a", "b"]);
+});
+
+test("someone ending the session, or an empty queue, keeps nothing", async () => {
+  for (const [reason, songs] of [
+    ["ended by agent", ["a", "b"]],
+    ["alone timeout", []],
+  ] as const) {
+    const store = new Store(":memory:");
+    const result = setup(
+      queueTracks,
+      unfinishedTimeouts,
+      undefined,
+      undefined,
+      store,
+    );
+    await result.coordinator.start();
+    for (const song of songs) await addSong(result.coordinator, song);
+    await Reflect.apply(
+      Reflect.get(result.coordinator, "end"),
+      result.coordinator,
+      [undefined, reason],
+    );
+    expect(store.sessionSaves([{ type: "channel", id: "channel" }])).toEqual(
+      [],
+    );
+  }
+});
+
+test("the next session offers to continue where the last one left off", async () => {
+  const store = new Store(":memory:");
+  store.addSessionSave(
+    { type: "channel", id: "channel" },
+    "Left unfinished",
+    "bot",
+    [
+      {
+        sourceInput: "https://example.com/a",
+        canonicalUrl: "https://example.com/a",
+        sourceId: "a",
+        title: "a",
+        artist: "Artist",
+      },
+      {
+        sourceInput: "https://example.com/b",
+        canonicalUrl: "https://example.com/b",
+        sourceId: "b",
+        title: "b",
+        artist: "Artist",
+      },
+    ],
+    {},
+  );
+  const result = setup(
+    queueTracks,
+    unfinishedTimeouts,
+    undefined,
+    undefined,
+    store,
+  );
+  await result.coordinator.start();
+  const shown = JSON.stringify(result.posted);
+  expect(shown).toContain("continue_last_queue");
+  expect(shown).toContain("Continue where we left off · 2 songs");
+  await result.coordinator.action({
+    type: "block_actions",
+    userId: "host",
+    actionId: "continue_last_queue",
+    value: result.coordinator.id,
+    channelId: "channel",
+    messageTs: "1",
+    triggerId: "",
+    metadata: "",
+    state: {},
+  });
+  await until(() =>
+    result.media.some(
+      (message) => (message as { type?: string }).type === "play",
+    ),
+  );
+  // It is picked up once, not offered again.
+  expect(store.sessionSaves([{ type: "channel", id: "channel" }])).toEqual([]);
+  await result.coordinator.endFromSlack();
+});
+
+test("queue message stages change one setting at a time from the Admin menu", () => {
+  const result = setup();
+  const change = (stage: string, what: string) => {
+    const saved: Record<string, unknown> = {};
+    const ok = Reflect.apply(
+      Reflect.get(result.coordinator, "setQueueStage"),
+      result.coordinator,
+      [saved, stage, what],
+    );
+    return { ok, saved };
+  };
+  expect(change("low", "toggle").saved).toEqual({
+    queueMessages: { low: { enabled: true } },
+  });
+  expect(change("last", "toggle").saved).toEqual({
+    queueMessages: { last: { enabled: false } },
+  });
+  expect(change("ended", "mention").saved).toEqual({
+    queueMessages: { ended: { mention: false } },
+  });
+  expect(change("low", "3").saved).toEqual({
+    queueMessages: { low: { left: 3 } },
+  });
+  expect(change("low", "9").ok).toBeFalse();
+  expect(change("last", "2").ok).toBeFalse();
+  expect(change("nope", "toggle").ok).toBeFalse();
 });
 
 test("Previous restarts after five seconds and seek controls move ten seconds", async () => {
@@ -2896,7 +3329,7 @@ test("a restored session keeps its own settings over the channel's defaults", as
   expect(Reflect.get(coordinator, "channelDefaultsApplied")).toBeFalse();
 });
 
-test("communism mode lasts through a restart", async () => {
+test("Everyone Is Host mode lasts through a restart", async () => {
   const store = new Store(":memory:");
   store.createSession({
     id: "saved",
@@ -5914,7 +6347,7 @@ function requestValue(calls: unknown[][]) {
   return accept?.value ?? "";
 }
 
-test("communism mode asks everyone in the thread to approve a bot", async () => {
+test("Everyone Is Host mode asks everyone in the thread to approve a bot", async () => {
   const test = setup();
   await test.coordinator.start();
   await test.coordinator.action({
@@ -5991,7 +6424,7 @@ test("communism mode asks everyone in the thread to approve a bot", async () => 
   ).toBeTrue();
 });
 
-test("starting communism mode leaves the session without a host", async () => {
+test("starting Everyone Is Host mode leaves the session without a host", async () => {
   const test = setup();
   await test.coordinator.start();
   await test.coordinator.action({
@@ -8568,7 +9001,10 @@ test("an end dialog confirmed after the session ended saves nothing", async () =
       save_to: { choice: { selected_option: { value: "channel" } } },
     }),
   );
-  expect(store.sessionSaves([channelSave])).toEqual([]);
+  // Only the queue the bot itself kept when the huddle ended is there.
+  expect(store.sessionSaves([channelSave]).map((save) => save.name)).toEqual([
+    "Left unfinished",
+  ]);
   expect(JSON.stringify(result.updatedModals.at(-1))).toContain(
     "The session had already ended, so it was not saved.",
   );
@@ -8804,6 +9240,11 @@ test("songs whose adder took their name off them name nobody", async () => {
     queued("c", { requesterId: "guest" }),
   );
   expect(named.requesterLabel).toBe("Added by Display guest");
+  const recommended = await Reflect.get(result.coordinator, "playMessage").call(
+    result.coordinator,
+    queued("r", { requesterId: "recommended" }),
+  );
+  expect(recommended.requesterLabel).toBe("Autoplay recommendation");
   Reflect.set(result.coordinator, "history", [
     anonymous,
     queued("b", { requesterId: "guest", status: "played" }),

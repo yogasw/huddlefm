@@ -21,6 +21,13 @@ import {
   permissionPresets,
   everyChannel,
   anchorQuietChoices,
+  queueLowChoices,
+  queueMessageSettings,
+  peopleTemplates,
+  queueStages,
+  type QueueStage,
+  type PeopleTemplate,
+  type WebhookEvent,
   recentTrackLimit,
   scrobblingModes,
   Store,
@@ -89,6 +96,7 @@ import {
   elapsed,
   escape,
   lastSongMessage,
+  lowQueueMessage,
   queueEndText,
   recommendedBy,
   trackSource,
@@ -106,6 +114,7 @@ import {
   truncate,
   when,
 } from "./coordinator-ui.ts";
+import { deliverWebhook, endEvent, webhookHost } from "./webhook.ts";
 import {
   eventGroup,
   integrationEventMessage,
@@ -143,6 +152,7 @@ import {
   selected,
   settingsTabActionPrefix,
   everyChannelAction,
+  participantRowAction,
   settingsTabFromAction,
   settingsTabs,
   settingsView,
@@ -300,7 +310,13 @@ const offPlayerActions = new Set([
 // that show or change the Channel tab of Settings, and loading a save, which
 // a channel manager may delete as they load it. Opening the load dialog is
 // not one: its trigger ID would expire while Slack is asked.
+// The channel save a session leaves behind when the bot goes on its own with
+// songs still to play, for the next session there to pick back up.
+const unfinishedSaveName = "Left unfinished";
+
 const channelRoleActions = new Set([
+  "continue_last_queue",
+  participantRowAction,
   "open_settings",
   "save_channel_defaults",
   "clear_channel_defaults",
@@ -338,7 +354,7 @@ function throwIfAborted(signal?: AbortSignal) {
 // so it says what the like is for rather than announcing it to the room.
 const likedNotice = "This will be recommended to you more";
 const communismHostNotice =
-  "Communism mode is on, so nobody can take over as host.";
+  "Everyone Is Host mode is on, so nobody can take over as host.";
 
 // Hosts song.link can match to other streaming services. Of the sources the
 // bot plays, that is YouTube and SoundCloud.
@@ -449,6 +465,7 @@ export class Coordinator {
   private history: Entry[] = [];
   // Whether the agent was told the queue ran out, since a song last started.
   private queueEndAnnounced = false;
+  private lowQueueAnnounced = false;
   private current?: Entry;
   private state = "ready";
   private playbackSeconds = 0;
@@ -482,7 +499,7 @@ export class Coordinator {
   private captions = false;
   // The bar along the bottom of a playing video, in video mode.
   private progressBar = true;
-  // Communism mode: everyone in the huddle may do everything, and nobody
+  // Everyone Is Host mode: everyone in the huddle may do everything, and nobody
   // takes over as host. Once on, it lasts until the session ends, through a
   // restart, but a saved session never carries it.
   private communism = false;
@@ -565,7 +582,7 @@ export class Coordinator {
       requestTs: string;
       requestId: string;
       grantedAt: number;
-      // The thread message communism mode asked everyone with.
+      // The thread message Everyone Is Host mode asked everyone with.
       promptTs?: string;
     }
   >();
@@ -759,7 +776,7 @@ export class Coordinator {
       if (everywhere || own)
         this.applyChannelDefaults({ ...everywhere, ...own });
     }
-    // Communism mode has no host, however the session came to be in it.
+    // Everyone Is Host mode has no host, however the session came to be in it.
     if (this.communism) this.hostId = undefined;
     this.log.info(
       {
@@ -826,6 +843,7 @@ export class Coordinator {
       huddleId: this.room.huddleId,
       channelId: this.room.uiChannelId,
     });
+    this.webhookEmit("huddle.joined");
     this.refreshIdle();
     this.sessionChanged();
     this.log.info(
@@ -971,6 +989,8 @@ export class Coordinator {
     this.sendMedia({ type: "captions", on: this.captions });
     this.sendMedia({ type: "progress_bar", on: this.progressBar });
     this.sendMedia({ type: "video_mode", on: this.videoMode });
+    // A media process that just joined knows nothing of the people yet.
+    this.sendPeople(true);
   }
 
   // Picks the current song back up where it was, for a media backend that
@@ -1208,6 +1228,8 @@ export class Coordinator {
       return this.jellyfinUi.action(interaction);
     if (interaction.actionId === "bulk_add_to_queue")
       return this.bulkAddLinks(interaction);
+    if (interaction.actionId === "continue_last_queue")
+      return this.continueUnfinished(interaction);
     if (
       interaction.type === "view_submission" &&
       interaction.actionId === "load_session_save"
@@ -1305,6 +1327,7 @@ export class Coordinator {
         claim_host: () => this.claimHost(interaction),
         start_communism: () => this.startCommunismFromSettings(interaction),
         [everyChannelAction]: () => this.setEveryChannel(interaction),
+        [participantRowAction]: () => this.setParticipantRow(interaction),
         continue_lastfm: () => this.continueLastFm(interaction),
         disconnect_lastfm: () => this.disconnectLastFm(interaction),
         disconnect_listenbrainz: () => this.disconnectListenBrainz(interaction),
@@ -1499,7 +1522,7 @@ export class Coordinator {
       youAreHost: host,
       yourCapabilities:
         this.communism && !grant && this.can(userId, "add")
-          ? "all (communism mode)"
+          ? "all (Everyone Is Host mode)"
           : host
             ? "all (host/manager)"
             : grant
@@ -2152,7 +2175,7 @@ export class Coordinator {
         return {
           ok: false as const,
           error:
-            "Only the host can change permissions, start communism mode or transfer host.",
+            "Only the host can change permissions, start Everyone Is Host mode or transfer host.",
         };
       if (
         (patch.hostUserId !== undefined ||
@@ -2163,10 +2186,10 @@ export class Coordinator {
         return {
           ok: false as const,
           error:
-            "Communism mode is on: everyone can already do everything, and nobody can take over as host.",
+            "Everyone Is Host mode is on: everyone can already do everything, and nobody can take over as host.",
         };
       if (patch.communism !== undefined && typeof patch.communism !== "boolean")
-        return { ok: false as const, error: "Invalid communism mode." };
+        return { ok: false as const, error: "Invalid Everyone Is Host mode." };
       if (
         (patch.displayMode !== undefined ||
           patch.autoplay !== undefined ||
@@ -3138,6 +3161,7 @@ export class Coordinator {
       this.sessionChanged();
     }
     this.participants.add(userId);
+    this.sendPeople();
     this.plugins.changed();
     this.plugins.refreshYouFor(userId);
     this.playbackScrobbling?.memberJoined(userId);
@@ -3155,6 +3179,7 @@ export class Coordinator {
     if (this.participants.delete(userId)) {
       this.participantsRevision++;
       this.sessionChanged();
+      this.sendPeople();
       this.plugins.changed();
       // out of the huddle, they're off its data channel too
       this.plugins.forget(userId);
@@ -3485,8 +3510,8 @@ export class Coordinator {
     );
   }
 
-  // Host powers. In communism mode everyone in the huddle holds them, but
-  // for changing the host or permissions, which communism mode does without.
+  // Host powers. In Everyone Is Host mode everyone in the huddle holds them, but
+  // for changing the host or permissions, which Everyone Is Host mode does without.
   private settingsAdmin(userId: string) {
     return (
       !this.isExcluded(userId) &&
@@ -3642,7 +3667,7 @@ export class Coordinator {
       permissions: options.permissions,
       events: options.events,
     });
-    // Communism mode has no host to ask, and anyone in the huddle may answer,
+    // Everyone Is Host mode has no host to ask, and anyone in the huddle may answer,
     // so it asks everyone in the thread.
     if (this.communism) {
       try {
@@ -3747,7 +3772,7 @@ export class Coordinator {
     });
   }
 
-  // Rewrites a control request communism mode posted in the thread, once
+  // Rewrites a control request Everyone Is Host mode posted in the thread, once
   // it's answered or gone, so nobody presses its buttons after.
   private async closePrompt(
     promptTs: string | undefined,
@@ -4246,14 +4271,21 @@ export class Coordinator {
     );
   }
 
-  // Mentions QUEUE_END_MENTION in the thread so an agent can add more: first
-  // when the last song in the queue starts, so the music can go on without a
-  // gap, then once the queue has run out, until a song starts again. Only with
-  // someone still listening, and not while autoplay keeps the queue filled.
-  private async announceQueueEnd(stage: "last" | "ended") {
-    const agentId = this.config.queueEndMention;
+  // Tells the thread the queue is running down, in up to three steps an admin
+  // can switch on or off: a few songs left, the last song starting, and the
+  // queue having run out, until a song starts again. Each can mention
+  // QUEUE_END_MENTION so an agent can add more, so the music goes on without
+  // a gap. Only with someone still listening, and not while autoplay keeps
+  // the queue filled.
+  private async announceQueueEnd(stage: QueueStage) {
+    const setting = queueMessageSettings(
+      this.store.channelDefaults(everyChannel),
+    )[stage];
+    if (!setting.enabled) return;
+    // A mention with nobody configured to mention has nothing to say.
+    const agentId = setting.mention ? this.config.queueEndMention : undefined;
+    if (setting.mention && !agentId) return;
     if (
-      !agentId ||
       (stage === "ended" && this.queueEndAnnounced) ||
       this.autoplayOn() ||
       !this.listenerIds().length ||
@@ -4261,6 +4293,12 @@ export class Coordinator {
     )
       return;
     if (stage === "ended") this.queueEndAnnounced = true;
+    const message =
+      stage === "low"
+        ? lowQueueMessage(this.queue.length)
+        : stage === "last"
+          ? lastSongMessage
+          : this.config.queueEndMessage;
     try {
       await this.post(
         this.room.uiChannelId,
@@ -4268,19 +4306,74 @@ export class Coordinator {
         queueEndText(
           agentId,
           [...this.history, ...(this.current ? [this.current] : [])].slice(-5),
-          stage === "last" ? lastSongMessage : this.config.queueEndMessage,
+          message,
         ),
       );
       this.log.info(
         { event: "queue_end_announced", agentId, stage },
-        "Told an agent the queue ended",
+        "Told the thread the queue is running down",
       );
     } catch (error) {
       this.log.warn(
         { event: "queue_end_announce_failed", agentId, stage, err: error },
-        "Could not tell the agent the queue ended",
+        "Could not tell the thread the queue is running down",
       );
     }
+  }
+
+  // Tells the admin's webhook about an event, if it listens for that one. It
+  // goes out in the background and a failure is only logged, so the music
+  // never waits on it.
+  private webhookEmit(
+    event: WebhookEvent,
+    extra: Record<string, unknown> = {},
+  ) {
+    const settings = this.store.webhookSettings();
+    if (!settings || !settings.events.includes(event)) return;
+    const song = (track: { title: string; artist?: string }) => ({
+      title: track.title,
+      ...(track.artist ? { artist: track.artist } : {}),
+    });
+    const body = {
+      event,
+      at: new Date().toISOString(),
+      sessionId: this.id,
+      huddleId: this.room.huddleId,
+      channelId: this.room.uiChannelId,
+      threadTs: this.room.uiThreadTs,
+      current: this.current ? song(this.current) : null,
+      queueLength: this.queue.length,
+      recent: this.history.slice(-5).map(song),
+      ...extra,
+    };
+    void deliverWebhook(settings, body).then((result) =>
+      this.log[result.ok ? "info" : "warn"](
+        {
+          event: result.ok ? "webhook_sent" : "webhook_failed",
+          webhookEvent: event,
+          host: webhookHost(settings.url),
+          status: result.status,
+          attempts: result.attempts,
+        },
+        result.ok ? "Sent a webhook" : "Could not send a webhook",
+      ),
+    );
+  }
+
+  // The running-low notice goes out once as the queue falls to the chosen
+  // number of songs, and again only after it has been filled past that.
+  private lowQueueCheck() {
+    const { enabled, left } = queueMessageSettings(
+      this.store.channelDefaults(everyChannel),
+    ).low;
+    if (this.queue.length > left) {
+      this.lowQueueAnnounced = false;
+      return;
+    }
+    if (!this.queue.length || this.lowQueueAnnounced) return;
+    this.lowQueueAnnounced = true;
+    this.webhookEmit("queue.low");
+    if (enabled) void this.announceQueueEnd("low");
   }
 
   private listenerIds() {
@@ -5451,7 +5544,10 @@ export class Coordinator {
       await this.render();
       this.sessionChanged();
       this.log.info({ event: "queue_idle" }, "No playable track in queue");
-      if (ended) void this.announceQueueEnd("ended");
+      if (ended) {
+        void this.announceQueueEnd("ended");
+        this.webhookEmit("queue.ended");
+      }
       return this.refreshIdle();
     }
     this.queueEndAnnounced = false;
@@ -5506,7 +5602,10 @@ export class Coordinator {
       },
       "Track started",
     );
-    if (!this.queue.length) void this.announceQueueEnd("last");
+    if (!this.queue.length) {
+      void this.announceQueueEnd("last");
+      this.webhookEmit("queue.last");
+    } else this.lowQueueCheck();
     this.startScrobbling(next, 0);
     await this.markWatched(next);
     this.noteSessionRecommendations();
@@ -5577,13 +5676,14 @@ export class Coordinator {
 
   private async playMessage(entry: Entry) {
     // A listener can take their name off the songs they added.
-    const requesterLabel = entry.automatic
-      ? "Autoplay recommendation"
-      : entry.requesterId === this.botUserId
-        ? undefined
-        : entry.requesterId
-          ? `Added by ${await this.slack.displayName(entry.requesterId)}`
-          : "Added by a listener";
+    const requesterLabel =
+      entry.automatic || entry.requesterId === recommendedBy
+        ? "Autoplay recommendation"
+        : entry.requesterId === this.botUserId
+          ? undefined
+          : entry.requesterId
+            ? `Added by ${await this.slack.displayName(entry.requesterId)}`
+            : "Added by a listener";
     const coverPath = entry.stream
       ? entry.stream.cover
       : entry.filePath && embeddedArtworkPath(entry.filePath);
@@ -7271,7 +7371,20 @@ export class Coordinator {
                     ?.anchorQuietMinutes ?? 0,
                 everyoneHost:
                   this.store.channelDefaults(everyChannel)?.communism === true,
+                queueMessages: queueMessageSettings(
+                  this.store.channelDefaults(everyChannel),
+                ),
               },
+              webhook: (() => {
+                const webhook = this.store.webhookSettings();
+                return {
+                  url: webhook?.url,
+                  hasToken: Boolean(webhook?.token),
+                  events: webhook?.events ?? [],
+                  updatedBy: webhook?.updatedBy,
+                  updatedAt: webhook?.updatedAt,
+                };
+              })(),
             },
           }
         : {}),
@@ -7286,6 +7399,9 @@ export class Coordinator {
         ...defined({
           autoJoin: this.managesChannel(userId)
             ? this.store.channelAutoJoin(this.roomId)
+            : undefined,
+          participantRow: this.managesChannel(userId)
+            ? this.channelPeopleRow()
             : undefined,
         }),
         saves: this.store
@@ -7684,7 +7800,7 @@ export class Coordinator {
     if (
       metadata.sessionId !== this.id ||
       // A client mod's change is one field, checked as it applies. In
-      // communism mode the host, who may leave, changes nobody's access.
+      // Everyone Is Host mode the host, who may leave, changes nobody's access.
       (!this.fromDataChannel() &&
         !this.communism &&
         (metadata.hostId || undefined) !== this.hostId) ||
@@ -7697,7 +7813,7 @@ export class Coordinator {
     // Edits made on other tabs count as much as those on screen.
     const state = this.settingsContext(interaction).draft;
     const admin = this.settingsAdmin(interaction.userId);
-    // Communism mode has no host to hand over or permissions to set, so a
+    // Everyone Is Host mode has no host to hand over or permissions to set, so a
     // draft made before it began has neither to apply.
     const hierarchy = admin && !this.communism;
     const nextHost = hierarchy ? state.host?.user?.selected_user : undefined;
@@ -7767,7 +7883,7 @@ export class Coordinator {
     if (dropped)
       await this.notice(
         interaction.userId,
-        "Communism mode is on, so the host and permissions weren't changed.",
+        "Everyone Is Host mode is on, so the host and permissions weren't changed.",
       );
     if (this.scrobbling) {
       try {
@@ -8023,6 +8139,86 @@ export class Coordinator {
   // Turns joining every new Huddle in the channel on or off. Unlike the
   // defaults it takes nothing from the session, so only the user's role is
   // checked again.
+  // How this channel's videos show who is in the huddle: hidden unless a
+  // channel manager chose a way in Settings.
+  private channelPeopleRow(): PeopleTemplate {
+    return this.store.channelDefaults(this.roomId)?.participantRow ?? "off";
+  }
+
+  // Tells the media process who is in the huddle and how to draw them, which
+  // it only does over a playing video. The photos are fetched once and kept,
+  // and a list that is out of date by the time its photos arrive is dropped.
+  private peopleRequest = 0;
+  private sentPeopleRow: PeopleTemplate = "off";
+  private sendPeople(fresh = false) {
+    const template = this.videoMode ? this.channelPeopleRow() : "off";
+    // A fresh media process starts with the row off, so only a row that is
+    // on needs saying again.
+    if (template !== this.sentPeopleRow || (fresh && template !== "off")) {
+      this.sentPeopleRow = template;
+      this.sendMedia({ type: "people_row", template });
+    }
+    if (template === "off") return;
+    const request = ++this.peopleRequest;
+    const ids = this.listenerIds().slice(0, 40);
+    void Promise.all(
+      ids.map(async (id) => ({
+        id,
+        name: await this.slack.displayName(id),
+        image: await this.slack.profilePhoto(id),
+      })),
+    )
+      .then((people) => {
+        if (request !== this.peopleRequest || this.state === "ended") return;
+        this.sendMedia({
+          type: "people",
+          people: people.map(({ id, name, image }) => ({
+            id,
+            name,
+            ...(image ? { image } : {}),
+          })),
+        });
+      })
+      .catch((error) =>
+        this.log.warn(
+          { event: "people_row_failed", err: error },
+          "Could not tell the media process who is in the huddle",
+        ),
+      );
+  }
+
+  // A channel manager's choice, from the Channel tab, of how this channel's
+  // videos show who is in the huddle. It takes effect in this session too.
+  private async setParticipantRow(interaction: Interaction) {
+    if (!this.managesChannel(interaction.userId))
+      return this.notice(
+        interaction.userId,
+        "Only channel managers can change this for the channel.",
+      );
+    if (parseMetadata(interaction.metadata).sessionId !== this.id)
+      return this.notice(
+        interaction.userId,
+        "Settings are stale; reopen them.",
+      );
+    const template = peopleTemplates.find(
+      (candidate) => candidate === interaction.value,
+    );
+    if (!template) return;
+    const saved = this.store.channelDefaults(this.roomId) ?? {};
+    this.store.setChannelDefaults(
+      this.roomId,
+      { ...saved, participantRow: template },
+      interaction.userId,
+    );
+    this.audit.record("channel_participant_row.changed", interaction.userId, {
+      sessionId: this.id,
+      channelId: this.roomId,
+      template,
+    });
+    this.sendPeople();
+    if (interaction.viewId) await this.updateSettings(interaction);
+  }
+
   private async setChannelAutoJoin(interaction: Interaction, on: boolean) {
     if (!this.managesChannel(interaction.userId))
       return this.notice(
@@ -8087,10 +8283,21 @@ export class Coordinator {
   // The Admin tab's switches for every channel's new sessions.
   private async setEveryChannel(interaction: Interaction) {
     if (!this.botAdmin(interaction.userId)) return;
-    const [setting, value] = (interaction.value ?? "").split(":");
+    const [setting, value, third] = (interaction.value ?? "").split(":");
     const on = value === "on";
     const saved = this.store.channelDefaults(everyChannel) ?? {};
     const minutes = Number(value);
+    if (setting === "queueStage") {
+      if (!this.setQueueStage(saved, value, third)) return;
+      this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
+      this.audit.record("every_channel.updated", interaction.userId, {
+        setting,
+        stage: value,
+        change: third,
+      });
+      if (interaction.viewId) await this.updateSettings(interaction);
+      return;
+    }
     if (setting === "anchor") saved.anchorEnabled = on;
     else if (
       setting === "anchorQuiet" &&
@@ -8099,7 +8306,7 @@ export class Coordinator {
       )
     )
       saved.anchorQuietMinutes = minutes;
-    // Everyone as host is communism mode, from the session's start.
+    // Everyone as host is Everyone Is Host mode, from the session's start.
     else if (setting === "everyone") saved.communism = on;
     else return;
     this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
@@ -8108,7 +8315,7 @@ export class Coordinator {
       ...(setting === "anchorQuiet" ? { minutes } : { on }),
     });
     // The session it was switched from takes it at once, as far as it can:
-    // communism mode, once on, lasts until the session ends.
+    // Everyone Is Host mode, once on, lasts until the session ends.
     if (setting === "anchor" && on !== this.anchorEnabled) {
       if (!on) clearTimeout(this.anchorTimer);
       this.anchorEnabled = on;
@@ -8119,16 +8326,45 @@ export class Coordinator {
     if (interaction.viewId) await this.updateSettings(interaction);
   }
 
-  // Settings' Start communism mode button, past its confirmation.
+  // One change to a queue-message stage from its menu: switch it on or off,
+  // switch its mention on or off, or (for the running-low notice) the number
+  // of songs left. Returns whether it was a valid change.
+  private setQueueStage(
+    saved: ChannelDefaults,
+    stage: string | undefined,
+    change: string | undefined,
+  ) {
+    if (!queueStages.includes(stage as QueueStage)) return false;
+    const key = stage as QueueStage;
+    const current = queueMessageSettings(saved)[key];
+    const messages = (saved.queueMessages ??= {});
+    const entry = (messages[key] ??= {});
+    if (change === "toggle") entry.enabled = !current.enabled;
+    else if (change === "mention") entry.mention = !current.mention;
+    else if (
+      key === "low" &&
+      queueLowChoices.includes(
+        Number(change) as (typeof queueLowChoices)[number],
+      )
+    )
+      (entry as { left?: number }).left = Number(change);
+    else return false;
+    return true;
+  }
+
+  // Settings' Start Everyone Is Host mode button, past its confirmation.
   private async startCommunismFromSettings(interaction: Interaction) {
     if (interaction.value !== this.id) return;
     if (!this.settingsAdmin(interaction.userId))
       return this.notice(
         interaction.userId,
-        "Only the host can start communism mode.",
+        "Only the host can start Everyone Is Host mode.",
       );
     if (!this.startCommunism(interaction.userId))
-      return this.notice(interaction.userId, "Communism mode is already on.");
+      return this.notice(
+        interaction.userId,
+        "Everyone Is Host mode is already on.",
+      );
     await this.render();
     if (interaction.viewId) await this.updateSettings(interaction);
   }
@@ -8493,6 +8729,34 @@ export class Coordinator {
     });
   }
 
+  // The idle player's Continue button: loads the queue the last session in
+  // this channel left unfinished, as the Load dialog would, and deletes it
+  // once all of it fit.
+  private async continueUnfinished(interaction: Interaction) {
+    const save = this.unfinishedSave();
+    if (!save)
+      return this.notice(
+        interaction.userId,
+        "There is no unfinished queue to continue.",
+      );
+    return this.loadSubmission({
+      ...interaction,
+      type: "view_submission",
+      actionId: "load_session_save",
+      metadata: JSON.stringify({ sessionId: this.id }),
+      state: {
+        save: { selection: { selected_option: { value: save.id } } },
+        forget: { enabled: { selected_options: [{ value: "enabled" }] } },
+      },
+    } as Interaction);
+  }
+
+  private unfinishedSave() {
+    return this.store
+      .sessionSaves([{ type: "channel", id: this.roomId }])
+      .find((save) => save.name === unfinishedSaveName && save.tracks.length);
+  }
+
   // Queues a saved session's songs, credited to whoever loads it, and
   // applies the settings they may change. Like other additions, the songs
   // are staged in the action queue and prepared outside it, since preparing
@@ -8855,6 +9119,19 @@ export class Coordinator {
                       value,
                     }),
                   ),
+                  ...when(
+                    this.unfinishedSave(),
+                    button(
+                      "continue_last_queue",
+                      plain(
+                        truncate(
+                          `Continue where we left off · ${songCount(this.unfinishedSave()?.tracks.length ?? 0)}`,
+                          75,
+                        ),
+                      ),
+                      { value },
+                    ),
+                  ),
                   // Shown whether or not there are saves, since the player
                   // is the same for everyone and each sees only some saves.
                   button("open_load_session", plain("Load saved session"), {
@@ -8875,7 +9152,7 @@ export class Coordinator {
           ),
           context(
             `volume_status_${id}`,
-            `${this.videoMode ? "Video mode · " : ""}Volume: ${Math.round(this.volume * 10_000) / 100}%${this.communism ? " · ☭ Communism mode" : this.hostId ? ` · Host: <@${this.hostId}>` : " · No host"}${
+            `${this.videoMode ? "Video mode · " : ""}Volume: ${Math.round(this.volume * 10_000) / 100}%${this.communism ? " · 👥 Everyone Is Host" : this.hostId ? ` · Host: <@${this.hostId}>` : " · No host"}${
               this.integrations.size
                 ? ` · Controlling: ${[...this.integrations.keys()].map((id) => `<@${id}>`).join(", ")}`
                 : ""
@@ -9762,6 +10039,14 @@ export class Coordinator {
       { event: "end_started", userId, reason, previousState: state },
       "Ending session",
     );
+    // The bot going on its own, rather than someone ending the session, keeps
+    // what was left to play for the next session in this channel.
+    if (endEvent(reason) === "huddle.left" && this.savableQueue().length)
+      this.saveSession(
+        this.botUserId,
+        { type: "channel", id: this.roomId },
+        unfinishedSaveName,
+      );
     this.state = "ended";
     this.playbackScrobbling?.finish();
     this.stopWork();
@@ -9788,6 +10073,7 @@ export class Coordinator {
       listenedSeconds: this.listenedSeconds,
     });
     this.dropIntegrations("session.ended");
+    this.webhookEmit(endEvent(reason), { reason });
     this.sessionChanged();
     this.sendMedia({ type: "leave" });
     // An update to the player still on its way would land after the recap.
@@ -9806,7 +10092,7 @@ export class Coordinator {
               "Could not delete ended player message",
             ),
           );
-        // Whoever ends a communism mode session, there is no host to have.
+        // Whoever ends an Everyone Is Host mode session, there is no host to have.
         const text = this.communism
           ? `Our session ended: ${reason === "ended by host" ? "ended by the people" : reason}`
           : `Session ended: ${reason}`;
@@ -9890,7 +10176,7 @@ export class Coordinator {
             `*Longest song:* ${longest ? `${escape(longest.title)} · ${elapsed(longest.duration!)}` : "Unknown"}`,
             `*Average song length:* ${timed.length ? elapsed(average) : "Unknown"}`,
             this.communism
-              ? "*Session host:* Nobody, it was communism mode"
+              ? "*Session host:* Nobody, it was Everyone Is Host mode"
               : `*Session host:* ${this.hostId ? `<@${this.hostId}>` : "None"}`,
           ].join("\n"),
         ),

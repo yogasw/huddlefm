@@ -1,4 +1,8 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
+import {
+  peopleTemplates,
+  type PeopleTemplate,
+} from "./native-media/video-format.ts";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { MediaForm, TrackKind, TrackMetadata } from "./tracks.ts";
@@ -94,8 +98,93 @@ export type ChannelDefaults = {
   communism?: boolean;
   // A channel that watches videos starts its sessions in video mode.
   mediaMode?: MediaMode;
+  // How a channel's video shows who is in the huddle; hidden unless set.
+  participantRow?: PeopleTemplate;
+  // What admins chose to tell the thread as the queue runs low. Only the
+  // every-channel row uses it.
+  queueMessages?: QueueMessages;
   permissions?: Capability[];
 };
+
+export { peopleTemplates, type PeopleTemplate };
+
+/** What the webhook can be told about. */
+export const webhookEvents = [
+  "huddle.joined",
+  "huddle.left",
+  "queue.low",
+  "queue.last",
+  "queue.ended",
+  "session.ended",
+] as const;
+export type WebhookEvent = (typeof webhookEvents)[number];
+
+export type WebhookSettings = {
+  url: string;
+  token: string;
+  events: WebhookEvent[];
+  updatedBy: string;
+  updatedAt: number;
+};
+
+/** The three moments the thread hears about the queue running down. */
+export const queueStages = ["low", "last", "ended"] as const;
+export type QueueStage = (typeof queueStages)[number];
+
+/** How many songs may be left when the "running low" notice goes out. */
+export const queueLowChoices = [1, 2, 3] as const;
+
+export type QueueMessageSetting = { enabled?: boolean; mention?: boolean };
+export type QueueMessages = {
+  low?: QueueMessageSetting & { left?: number };
+  last?: QueueMessageSetting;
+  ended?: QueueMessageSetting;
+};
+
+/**
+ * Each stage with its defaults filled in: the last song and the end of the
+ * queue keep telling the agent, as they always did, and the running-low
+ * notice is off until an admin turns it on.
+ */
+export function queueMessageSettings(defaults?: ChannelDefaults) {
+  const saved = defaults?.queueMessages;
+  return {
+    low: {
+      enabled: saved?.low?.enabled ?? false,
+      mention: saved?.low?.mention ?? true,
+      left: saved?.low?.left ?? 1,
+    },
+    last: {
+      enabled: saved?.last?.enabled ?? true,
+      mention: saved?.last?.mention ?? true,
+    },
+    ended: {
+      enabled: saved?.ended?.enabled ?? true,
+      mention: saved?.ended?.mention ?? true,
+    },
+  };
+}
+
+function parseQueueMessages(saved: unknown): QueueMessages | undefined {
+  if (!saved || typeof saved !== "object") return undefined;
+  const raw = saved as Record<string, unknown>;
+  const messages: QueueMessages = {};
+  for (const stage of queueStages) {
+    const entry = raw[stage];
+    if (!entry || typeof entry !== "object") continue;
+    const source = entry as Record<string, unknown>;
+    const setting: QueueMessageSetting & { left?: number } = {};
+    if (typeof source.enabled === "boolean") setting.enabled = source.enabled;
+    if (typeof source.mention === "boolean") setting.mention = source.mention;
+    if (
+      stage === "low" &&
+      queueLowChoices.includes(source.left as (typeof queueLowChoices)[number])
+    )
+      setting.left = source.left as number;
+    if (Object.keys(setting).length) messages[stage] = setting;
+  }
+  return Object.keys(messages).length ? messages : undefined;
+}
 
 /** The quiet waits admins can pick before the player moves down. */
 export const anchorQuietChoices = [0, 1, 2, 5, 10] as const;
@@ -135,6 +224,10 @@ export function parseChannelDefaults(
     defaults.communism = saved.communism;
   const mediaMode = modeOf(mediaModes, saved.mediaMode);
   if (mediaMode) defaults.mediaMode = mediaMode;
+  const participantRow = modeOf(peopleTemplates, saved.participantRow);
+  if (participantRow) defaults.participantRow = participantRow;
+  const queueMessages = parseQueueMessages(saved.queueMessages);
+  if (queueMessages) defaults.queueMessages = queueMessages;
   if (Array.isArray(saved.permissions))
     defaults.permissions = capabilities.filter((capability) =>
       (saved.permissions as unknown[]).includes(capability),
@@ -873,6 +966,16 @@ export class Store {
       CREATE TABLE IF NOT EXISTS channel_defaults (
         channel_id TEXT PRIMARY KEY,
         settings TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      -- The one webhook an admin may set: where to send, the token sent as
+      -- a bearer, and which events go out.
+      CREATE TABLE IF NOT EXISTS webhook_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        url TEXT NOT NULL,
+        token TEXT NOT NULL DEFAULT '',
+        events TEXT NOT NULL DEFAULT '[]',
         updated_by TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -2321,6 +2424,62 @@ export class Store {
           updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
       )
       .run(channelId, JSON.stringify(defaults), userId, Date.now());
+  }
+
+  /** The webhook an admin set, if there is one. */
+  webhookSettings(): WebhookSettings | undefined {
+    const row = this.db
+      .query(
+        "SELECT url, token, events, updated_by, updated_at FROM webhook_settings WHERE id = 1",
+      )
+      .get() as {
+      url: string;
+      token: string;
+      events: string;
+      updated_by: string;
+      updated_at: number;
+    } | null;
+    if (!row) return undefined;
+    let events: unknown = [];
+    try {
+      events = JSON.parse(row.events);
+    } catch {
+      // An unreadable list sends nothing.
+    }
+    return {
+      url: row.url,
+      token: row.token,
+      events: webhookEvents.filter(
+        (event) => Array.isArray(events) && events.includes(event),
+      ),
+      updatedBy: row.updated_by,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  setWebhookSettings(
+    settings: { url: string; token: string; events: readonly WebhookEvent[] },
+    userId: string,
+  ) {
+    this.db
+      .query(
+        `INSERT INTO webhook_settings (id, url, token, events, updated_by, updated_at)
+        VALUES (1, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET url = excluded.url, token = excluded.token,
+          events = excluded.events, updated_by = excluded.updated_by,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        settings.url,
+        settings.token,
+        JSON.stringify(settings.events),
+        userId,
+        Date.now(),
+      );
+  }
+
+  clearWebhookSettings() {
+    this.db.query("DELETE FROM webhook_settings WHERE id = 1").run();
   }
 
   clearChannelDefaults(channelId: string) {

@@ -151,6 +151,8 @@ receives events from channels it is in.
 | `PAUSED_TIMEOUT_MS`             | `600000`               | Leave when paused for this long                                                                                                                                                                                                                                                     |
 | `CHIME_MEDIA_REGION`            | `ap-southeast-2`       | AWS region for Chime media                                                                                                                                                                                                                                                          |
 
+The Admin tab also has a row for each of the three queue notices: the last song starting, the queue running out, and (off by default) only 1 to 3 songs being left. Each can be switched on or off, and sent with or without the `QUEUE_END_MENTION` mention.
+
 ## Video mode
 
 | Variable                       | Default      | Purpose                                                                                                       |
@@ -162,6 +164,8 @@ receives events from channels it is in.
 | `VIDEO_SESSION_LIMIT`          | `2`          | Huddles that may be in video mode at once; each takes about a CPU core. `0` turns it off                      |
 | `VIDEO_CACHE_LIMIT_BYTES`      | `5000000000` | Disk kept for prepared videos under `data/cache/video`, apart from the song cache; `0` disables and clears it |
 | `JELLYFIN_ENABLED`             | `true`       | Lets users link their own Jellyfin servers; `false` turns it off                                              |
+
+Channel managers can also show who is in the huddle over a playing video, from the Channel tab of Settings under **Participants on video**. It is hidden unless chosen, and is per channel: _Everyone in a row_ (up to eight photos, the rest counted as "+N", with speakers always shown), _Only who is speaking_ (a name and photo for up to three speakers), or _Everyone stacked close_. A green ring marks whoever is speaking and a red mark whoever is muted; photos are Slack profile photos, with initials where there is none.
 
 ## Runtime and logging
 
