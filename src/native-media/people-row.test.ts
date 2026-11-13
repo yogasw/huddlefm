@@ -77,10 +77,12 @@ test("the row sits bottom right, inside the frame, on even coordinates", () => {
     expect(box.height % 2).toBe(0);
     expect(box.x + box.width).toBeLessThanOrEqual(size.width);
     expect(box.y + box.height).toBeLessThan(size.height);
-    // Right half, bottom quarter, clear of the progress bar.
+    // Right half, bottom quarter, as low as Slack's own tile.
     expect(box.x).toBeGreaterThan(size.width / 2);
     expect(box.y).toBeGreaterThan(size.height * 0.75);
-    expect(box.y + box.height).toBeLessThan(size.height * 0.96);
+    const { pills } = layout;
+    const gap = size.height - Math.max(...pills.map((p) => p.y + p.height));
+    expect(gap).toBe(Math.round(size.height * 0.018));
   }
 });
 
