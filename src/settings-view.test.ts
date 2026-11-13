@@ -107,14 +107,14 @@ test("Settings opens on the session's tab, and a lone tab has no tab bar", () =>
   ).toBeDefined();
 });
 
-test("communism mode's Host tab only says so", () => {
+test("Everyone Is Host mode's Host tab only says so", () => {
   const base = options({
     access: { ...access, volume: true, configure: true, admin: true },
   });
   const communism = { ...base, session: { ...base.session, communism: true } };
   const host = settingsView({ ...communism, tab: "host" });
   expect(block(host, "communism_active")?.text.text).toContain(
-    "Communism mode is active",
+    "Everyone Is Host mode is active",
   );
   expect(block(host, "communism_actions")).toBeUndefined();
   expect(block(host, "host")).toBeUndefined();
@@ -134,7 +134,7 @@ test("communism mode's Host tab only says so", () => {
     elements: [
       {
         action_id: "start_communism",
-        confirm: { title: { text: "Start communism mode?" } },
+        confirm: { title: { text: "Start Everyone Is Host mode?" } },
       },
     ],
   });

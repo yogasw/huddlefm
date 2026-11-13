@@ -338,7 +338,7 @@ function throwIfAborted(signal?: AbortSignal) {
 // so it says what the like is for rather than announcing it to the room.
 const likedNotice = "This will be recommended to you more";
 const communismHostNotice =
-  "Communism mode is on, so nobody can take over as host.";
+  "Everyone Is Host mode is on, so nobody can take over as host.";
 
 // Hosts song.link can match to other streaming services. Of the sources the
 // bot plays, that is YouTube and SoundCloud.
@@ -482,7 +482,7 @@ export class Coordinator {
   private captions = false;
   // The bar along the bottom of a playing video, in video mode.
   private progressBar = true;
-  // Communism mode: everyone in the huddle may do everything, and nobody
+  // Everyone Is Host mode: everyone in the huddle may do everything, and nobody
   // takes over as host. Once on, it lasts until the session ends, through a
   // restart, but a saved session never carries it.
   private communism = false;
@@ -565,7 +565,7 @@ export class Coordinator {
       requestTs: string;
       requestId: string;
       grantedAt: number;
-      // The thread message communism mode asked everyone with.
+      // The thread message Everyone Is Host mode asked everyone with.
       promptTs?: string;
     }
   >();
@@ -759,7 +759,7 @@ export class Coordinator {
       if (everywhere || own)
         this.applyChannelDefaults({ ...everywhere, ...own });
     }
-    // Communism mode has no host, however the session came to be in it.
+    // Everyone Is Host mode has no host, however the session came to be in it.
     if (this.communism) this.hostId = undefined;
     this.log.info(
       {
@@ -1499,7 +1499,7 @@ export class Coordinator {
       youAreHost: host,
       yourCapabilities:
         this.communism && !grant && this.can(userId, "add")
-          ? "all (communism mode)"
+          ? "all (Everyone Is Host mode)"
           : host
             ? "all (host/manager)"
             : grant
@@ -2152,7 +2152,7 @@ export class Coordinator {
         return {
           ok: false as const,
           error:
-            "Only the host can change permissions, start communism mode or transfer host.",
+            "Only the host can change permissions, start Everyone Is Host mode or transfer host.",
         };
       if (
         (patch.hostUserId !== undefined ||
@@ -2163,10 +2163,10 @@ export class Coordinator {
         return {
           ok: false as const,
           error:
-            "Communism mode is on: everyone can already do everything, and nobody can take over as host.",
+            "Everyone Is Host mode is on: everyone can already do everything, and nobody can take over as host.",
         };
       if (patch.communism !== undefined && typeof patch.communism !== "boolean")
-        return { ok: false as const, error: "Invalid communism mode." };
+        return { ok: false as const, error: "Invalid Everyone Is Host mode." };
       if (
         (patch.displayMode !== undefined ||
           patch.autoplay !== undefined ||
@@ -3485,8 +3485,8 @@ export class Coordinator {
     );
   }
 
-  // Host powers. In communism mode everyone in the huddle holds them, but
-  // for changing the host or permissions, which communism mode does without.
+  // Host powers. In Everyone Is Host mode everyone in the huddle holds them, but
+  // for changing the host or permissions, which Everyone Is Host mode does without.
   private settingsAdmin(userId: string) {
     return (
       !this.isExcluded(userId) &&
@@ -3642,7 +3642,7 @@ export class Coordinator {
       permissions: options.permissions,
       events: options.events,
     });
-    // Communism mode has no host to ask, and anyone in the huddle may answer,
+    // Everyone Is Host mode has no host to ask, and anyone in the huddle may answer,
     // so it asks everyone in the thread.
     if (this.communism) {
       try {
@@ -3747,7 +3747,7 @@ export class Coordinator {
     });
   }
 
-  // Rewrites a control request communism mode posted in the thread, once
+  // Rewrites a control request Everyone Is Host mode posted in the thread, once
   // it's answered or gone, so nobody presses its buttons after.
   private async closePrompt(
     promptTs: string | undefined,
@@ -7684,7 +7684,7 @@ export class Coordinator {
     if (
       metadata.sessionId !== this.id ||
       // A client mod's change is one field, checked as it applies. In
-      // communism mode the host, who may leave, changes nobody's access.
+      // Everyone Is Host mode the host, who may leave, changes nobody's access.
       (!this.fromDataChannel() &&
         !this.communism &&
         (metadata.hostId || undefined) !== this.hostId) ||
@@ -7697,7 +7697,7 @@ export class Coordinator {
     // Edits made on other tabs count as much as those on screen.
     const state = this.settingsContext(interaction).draft;
     const admin = this.settingsAdmin(interaction.userId);
-    // Communism mode has no host to hand over or permissions to set, so a
+    // Everyone Is Host mode has no host to hand over or permissions to set, so a
     // draft made before it began has neither to apply.
     const hierarchy = admin && !this.communism;
     const nextHost = hierarchy ? state.host?.user?.selected_user : undefined;
@@ -7767,7 +7767,7 @@ export class Coordinator {
     if (dropped)
       await this.notice(
         interaction.userId,
-        "Communism mode is on, so the host and permissions weren't changed.",
+        "Everyone Is Host mode is on, so the host and permissions weren't changed.",
       );
     if (this.scrobbling) {
       try {
@@ -8099,7 +8099,7 @@ export class Coordinator {
       )
     )
       saved.anchorQuietMinutes = minutes;
-    // Everyone as host is communism mode, from the session's start.
+    // Everyone as host is Everyone Is Host mode, from the session's start.
     else if (setting === "everyone") saved.communism = on;
     else return;
     this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
@@ -8108,7 +8108,7 @@ export class Coordinator {
       ...(setting === "anchorQuiet" ? { minutes } : { on }),
     });
     // The session it was switched from takes it at once, as far as it can:
-    // communism mode, once on, lasts until the session ends.
+    // Everyone Is Host mode, once on, lasts until the session ends.
     if (setting === "anchor" && on !== this.anchorEnabled) {
       if (!on) clearTimeout(this.anchorTimer);
       this.anchorEnabled = on;
@@ -8119,16 +8119,19 @@ export class Coordinator {
     if (interaction.viewId) await this.updateSettings(interaction);
   }
 
-  // Settings' Start communism mode button, past its confirmation.
+  // Settings' Start Everyone Is Host mode button, past its confirmation.
   private async startCommunismFromSettings(interaction: Interaction) {
     if (interaction.value !== this.id) return;
     if (!this.settingsAdmin(interaction.userId))
       return this.notice(
         interaction.userId,
-        "Only the host can start communism mode.",
+        "Only the host can start Everyone Is Host mode.",
       );
     if (!this.startCommunism(interaction.userId))
-      return this.notice(interaction.userId, "Communism mode is already on.");
+      return this.notice(
+        interaction.userId,
+        "Everyone Is Host mode is already on.",
+      );
     await this.render();
     if (interaction.viewId) await this.updateSettings(interaction);
   }
@@ -8875,7 +8878,7 @@ export class Coordinator {
           ),
           context(
             `volume_status_${id}`,
-            `${this.videoMode ? "Video mode · " : ""}Volume: ${Math.round(this.volume * 10_000) / 100}%${this.communism ? " · ☭ Communism mode" : this.hostId ? ` · Host: <@${this.hostId}>` : " · No host"}${
+            `${this.videoMode ? "Video mode · " : ""}Volume: ${Math.round(this.volume * 10_000) / 100}%${this.communism ? " · 👥 Everyone Is Host" : this.hostId ? ` · Host: <@${this.hostId}>` : " · No host"}${
               this.integrations.size
                 ? ` · Controlling: ${[...this.integrations.keys()].map((id) => `<@${id}>`).join(", ")}`
                 : ""
@@ -9806,7 +9809,7 @@ export class Coordinator {
               "Could not delete ended player message",
             ),
           );
-        // Whoever ends a communism mode session, there is no host to have.
+        // Whoever ends a Everyone Is Host mode session, there is no host to have.
         const text = this.communism
           ? `Our session ended: ${reason === "ended by host" ? "ended by the people" : reason}`
           : `Session ended: ${reason}`;
@@ -9890,7 +9893,7 @@ export class Coordinator {
             `*Longest song:* ${longest ? `${escape(longest.title)} · ${elapsed(longest.duration!)}` : "Unknown"}`,
             `*Average song length:* ${timed.length ? elapsed(average) : "Unknown"}`,
             this.communism
-              ? "*Session host:* Nobody, it was communism mode"
+              ? "*Session host:* Nobody, it was Everyone Is Host mode"
               : `*Session host:* ${this.hostId ? `<@${this.hostId}>` : "None"}`,
           ].join("\n"),
         ),

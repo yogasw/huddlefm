@@ -105,7 +105,7 @@ const settingsSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Start communism mode: everyone in the huddle can do everything, and nobody can take over as host. It lasts until the session ends and can't be turned off.",
+      "Start Everyone Is Host mode: everyone in the huddle can do everything, and nobody can take over as host. It lasts until the session ends and can't be turned off.",
     ),
 });
 
@@ -252,8 +252,8 @@ export function agentTools(coordinator: Coordinator, userId: string) {
     }),
     update_settings: tool({
       description: video
-        ? "Change session settings the user is allowed to configure (mode, autoplay of related videos, loop, keep-player-at-bottom, permission preset, host, or communism mode). Display and transitions are paused in video mode."
-        : "Change session settings the user is allowed to configure (mode, display, autoplay, loop, transitions, keep-player-at-bottom, permission preset, host, or communism mode).",
+        ? "Change session settings the user is allowed to configure (mode, autoplay of related videos, loop, keep-player-at-bottom, permission preset, host, or Everyone Is Host mode). Display and transitions are paused in video mode."
+        : "Change session settings the user is allowed to configure (mode, display, autoplay, loop, transitions, keep-player-at-bottom, permission preset, host, or Everyone Is Host mode).",
       // Video mode leaves the music's own settings out of the schema.
       inputSchema: video
         ? (settingsSchema
@@ -273,7 +273,7 @@ export function agentTools(coordinator: Coordinator, userId: string) {
         coordinator.agentUpdateSettings(userId, input, abortSignal),
     }),
     claim_host: action(
-      "Claim host when there is currently no host. Not possible in communism mode.",
+      "Claim host when there is currently no host. Not possible in Everyone Is Host mode.",
       (signal) => coordinator.agentClaimHost(userId, signal),
     ),
     set_session_scrobbling: tool({
@@ -378,7 +378,7 @@ ${
     : `The session is in music mode. A video link added here plays as audio unless add_tracks is given withVideoMode. Display modes: ${displayModes.join(", ")}. Transition modes: ${transitionModes.join(", ")}.`
 }${
         options.coordinator.communismMode
-          ? "\nCommunism mode is on: everyone in the huddle can do everything, and nobody can take over as host. Call it our session."
+          ? "\nEveryone Is Host mode is on: everyone in the huddle can do everything, and nobody can take over as host. Call it our session."
           : ""
       }
 Loop modes: ${loopModes.join(", ")}.`,

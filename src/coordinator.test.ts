@@ -1714,7 +1714,7 @@ test("first current participant claims a vacant host role", async () => {
   await test.coordinator.endFromSlack();
 });
 
-test("communism mode lets everyone do everything but take over as host", async () => {
+test("Everyone Is Host mode lets everyone do everything but take over as host", async () => {
   const test = setup();
   await test.coordinator.start();
   const start = (userId: string) =>
@@ -1726,7 +1726,9 @@ test("communism mode lets everyone do everything but take over as host", async (
   // Only the host can start it.
   await start("guest");
   expect(test.sessions).not.toContainEqual({ communism: true });
-  expect(test.ephemeral.at(-1)).toBe("Only the host can start communism mode.");
+  expect(test.ephemeral.at(-1)).toBe(
+    "Only the host can start Everyone Is Host mode.",
+  );
   expect(await test.coordinator.agentStatus("guest")).toMatchObject({
     yourCapabilities: ["add", "remove-own"],
   });
@@ -1739,10 +1741,10 @@ test("communism mode lets everyone do everything but take over as host", async (
     { sessionId: test.coordinator.id },
   ]);
   const player = JSON.stringify(test.updates.at(-1));
-  expect(player).toContain("☭ Communism mode");
+  expect(player).toContain("👥 Everyone Is Host");
   expect(player).not.toContain("Host: <@host>");
   expect(await test.coordinator.agentStatus("guest")).toMatchObject({
-    yourCapabilities: "all (communism mode)",
+    yourCapabilities: "all (Everyone Is Host mode)",
   });
   // Everything but the host and the permissions it does without.
   expect(
@@ -1774,7 +1776,7 @@ test("communism mode lets everyone do everything but take over as host", async (
       communism: false,
     }),
   ).toMatchObject({ ok: true, communism: true });
-  expect(JSON.stringify(test.updates.at(-1))).toContain("☭ Communism mode");
+  expect(JSON.stringify(test.updates.at(-1))).toContain("👥 Everyone Is Host");
   await test.coordinator.endFromSlack();
 });
 
@@ -1790,7 +1792,7 @@ test("a guest passing communism off to the agent is not refused", async () => {
   await test.coordinator.endFromSlack();
 });
 
-test("a client mod's host can start communism mode", async () => {
+test("a client mod's host can start Everyone Is Host mode", async () => {
   const test = setup();
   await test.coordinator.start();
   const command = (userId: string) =>
@@ -2896,7 +2898,7 @@ test("a restored session keeps its own settings over the channel's defaults", as
   expect(Reflect.get(coordinator, "channelDefaultsApplied")).toBeFalse();
 });
 
-test("communism mode lasts through a restart", async () => {
+test("Everyone Is Host mode lasts through a restart", async () => {
   const store = new Store(":memory:");
   store.createSession({
     id: "saved",
@@ -5914,7 +5916,7 @@ function requestValue(calls: unknown[][]) {
   return accept?.value ?? "";
 }
 
-test("communism mode asks everyone in the thread to approve a bot", async () => {
+test("Everyone Is Host mode asks everyone in the thread to approve a bot", async () => {
   const test = setup();
   await test.coordinator.start();
   await test.coordinator.action({
@@ -5991,7 +5993,7 @@ test("communism mode asks everyone in the thread to approve a bot", async () => 
   ).toBeTrue();
 });
 
-test("starting communism mode leaves the session without a host", async () => {
+test("starting Everyone Is Host mode leaves the session without a host", async () => {
   const test = setup();
   await test.coordinator.start();
   await test.coordinator.action({

@@ -70,7 +70,7 @@ test("fields follow the viewer's access and the session's mode", () => {
     "host",
     "permissions",
   ]);
-  // Communism mode has no host to change or permissions to set.
+  // Everyone Is Host mode has no host to change or permissions to set.
   expect(ids({ session: { ...session, communism: true } })).toEqual([
     "media_mode",
     "volume",

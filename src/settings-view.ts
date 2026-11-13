@@ -118,7 +118,7 @@ const tabLabels: Record<SettingsTab, string> = {
   host: "Host",
   admin: "Admin",
 };
-// Communism mode's session is everyone's.
+// Everyone Is Host mode's session is everyone's.
 function tabLabel(tab: SettingsTab, communism: boolean) {
   return communism && tab === "session" ? "Our session" : tabLabels[tab];
 }
@@ -418,11 +418,11 @@ export function settingsView(options: SettingsViewOptions) {
     tab === "host" && access.admin && !options.session.communism,
     { type: "divider" },
     actions("communism_actions", [
-      button("start_communism", plain("Start communism mode"), {
+      button("start_communism", plain("Start Everyone Is Host mode"), {
         style: "danger",
         value: options.sessionId,
         confirm: confirm(
-          "Start communism mode?",
+          "Start Everyone Is Host mode?",
           "Everyone in the huddle will be able to do everything, and nobody will be able to take over as host. It can't be turned off: it lasts until the session ends.",
           "Start",
         ),
@@ -785,7 +785,7 @@ function channelBlocks(options: SettingsViewOptions) {
           value,
           confirm: confirm(
             "Save channel defaults?",
-            `New sessions in this channel will start with the settings and permissions shown in Settings, including changes not saved yet and the mode (music or video)${options.session.communism ? ", and in communism mode, which can't be turned off" : ""}.`,
+            `New sessions in this channel will start with the settings and permissions shown in Settings, including changes not saved yet and the mode (music or video)${options.session.communism ? ", and in Everyone Is Host mode, which can't be turned off" : ""}.`,
             "Save",
           ),
         }),
@@ -926,7 +926,7 @@ function everyChannelBlocks(
     },
     toggle(
       "everyone",
-      "Everyone in the huddle is host (communism mode)",
+      "Everyone in the huddle is host (Everyone Is Host mode)",
       every.everyoneHost,
       "every_channel_everyone",
     ),
@@ -966,13 +966,13 @@ function adminBlocks(options: SettingsViewOptions) {
 }
 
 function hostBlocks(options: SettingsViewOptions, form: FormState) {
-  // Communism mode has no host to change or permissions to hand out, and
+  // Everyone Is Host mode has no host to change or permissions to hand out, and
   // lasts until the session ends; the tab only says so.
   return [
     ...when(
       options.session.communism,
       section(
-        "☭ *Communism mode is active.* Everyone in the huddle can do everything, and nobody can take over as host, until the session ends.",
+        "👥 *Everyone Is Host mode is active.* Everyone in the huddle can do everything, and nobody can take over as host, until the session ends.",
         "communism_active",
       ),
     ),

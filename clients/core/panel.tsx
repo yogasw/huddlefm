@@ -603,7 +603,7 @@ function NowPlaying(props: {
       </div>
       {state.session.communism ? (
         <div className="huddlefm-host">
-          <span>☭ Communism mode: everyone can do everything.</span>
+          <span>👥 Everyone Is Host: everyone can do everything.</span>
         </div>
       ) : (
         !state.session.hostId && (
@@ -1498,7 +1498,7 @@ function Settings(props: {
     (group) =>
       group.fields.length ||
       (group.title === "You" && jellyfin) ||
-      // communism mode's Host tab has no fields, but says it's on
+      // Everyone Is Host mode's Host tab has no fields, but says it's on
       (group.title === "Host" && you?.admin),
   );
   const [tab, setTab] = React.useState(shown[0]?.title ?? "You");
@@ -1510,8 +1510,8 @@ function Settings(props: {
     group.title === "Host" && state.session.communism && (
       <div key="communism" className="huddlefm-field">
         <kit.Hint>
-          Communism mode is active. Everyone in the huddle can do everything,
-          and nobody can take over as host, until the session ends.
+          Everyone Is Host mode is active. Everyone in the huddle can do
+          everything, and nobody can take over as host, until the session ends.
         </kit.Hint>
       </div>
     ),
@@ -1562,7 +1562,7 @@ function Settings(props: {
             onClick={async () => {
               if (
                 await kit.confirm({
-                  title: "Start communism mode?",
+                  title: "Start Everyone Is Host mode?",
                   body: "Everyone in the huddle will be able to do everything, and nobody will be able to take over as host. It can't be turned off: it lasts until the session ends.",
                   confirmText: "Start",
                   danger: true,
@@ -1571,7 +1571,7 @@ function Settings(props: {
                 run(platform, { type: "start_communism" });
             }}
           >
-            Start communism mode
+            Start Everyone Is Host mode
           </kit.Button>
         </div>
       </div>
@@ -1591,7 +1591,7 @@ function Settings(props: {
           onChange={setTab}
           tabs={shown.map((group) => ({
             id: group.title,
-            // communism mode's session is everyone's
+            // Everyone Is Host mode's session is everyone's
             title:
               group.title === "Session" && state.session.communism
                 ? "Our session"
