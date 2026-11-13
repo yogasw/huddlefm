@@ -2231,6 +2231,134 @@ test("someone ending the session is told apart from the bot leaving", async () =
   ]);
 });
 
+const addSong = (
+  coordinator: { action: (interaction: any) => Promise<void> },
+  value: string,
+) =>
+  coordinator.action({
+    type: "block_actions",
+    userId: "host",
+    actionId: "add_track_to_queue",
+    value,
+    channelId: "channel",
+    messageTs: "1",
+    triggerId: "",
+    metadata: "",
+    state: {},
+  });
+
+const unfinishedTimeouts = {
+  aloneMs: 60_000,
+  idleMs: 600_000,
+  pausedMs: 600_000,
+  warningMs: 120_000,
+};
+
+test("the bot leaving on its own keeps the rest of the queue for the channel", async () => {
+  const store = new Store(":memory:");
+  const result = setup(
+    queueTracks,
+    unfinishedTimeouts,
+    undefined,
+    undefined,
+    store,
+  );
+  await result.coordinator.start();
+  await addSong(result.coordinator, "a");
+  await addSong(result.coordinator, "b");
+  await Reflect.apply(
+    Reflect.get(result.coordinator, "end"),
+    result.coordinator,
+    [undefined, "alone timeout"],
+  );
+  const saves = store.sessionSaves([{ type: "channel", id: "channel" }]);
+  expect(saves).toHaveLength(1);
+  expect(saves[0]!.name).toBe("Left unfinished");
+  expect(saves[0]!.tracks.map((track) => track.title)).toEqual(["a", "b"]);
+});
+
+test("someone ending the session, or an empty queue, keeps nothing", async () => {
+  for (const [reason, songs] of [
+    ["ended by agent", ["a", "b"]],
+    ["alone timeout", []],
+  ] as const) {
+    const store = new Store(":memory:");
+    const result = setup(
+      queueTracks,
+      unfinishedTimeouts,
+      undefined,
+      undefined,
+      store,
+    );
+    await result.coordinator.start();
+    for (const song of songs) await addSong(result.coordinator, song);
+    await Reflect.apply(
+      Reflect.get(result.coordinator, "end"),
+      result.coordinator,
+      [undefined, reason],
+    );
+    expect(store.sessionSaves([{ type: "channel", id: "channel" }])).toEqual(
+      [],
+    );
+  }
+});
+
+test("the next session offers to continue where the last one left off", async () => {
+  const store = new Store(":memory:");
+  store.addSessionSave(
+    { type: "channel", id: "channel" },
+    "Left unfinished",
+    "bot",
+    [
+      {
+        sourceInput: "https://example.com/a",
+        canonicalUrl: "https://example.com/a",
+        sourceId: "a",
+        title: "a",
+        artist: "Artist",
+      },
+      {
+        sourceInput: "https://example.com/b",
+        canonicalUrl: "https://example.com/b",
+        sourceId: "b",
+        title: "b",
+        artist: "Artist",
+      },
+    ],
+    {},
+  );
+  const result = setup(
+    queueTracks,
+    unfinishedTimeouts,
+    undefined,
+    undefined,
+    store,
+  );
+  await result.coordinator.start();
+  const shown = JSON.stringify(result.posted);
+  expect(shown).toContain("continue_last_queue");
+  expect(shown).toContain("Continue where we left off · 2 songs");
+  await result.coordinator.action({
+    type: "block_actions",
+    userId: "host",
+    actionId: "continue_last_queue",
+    value: result.coordinator.id,
+    channelId: "channel",
+    messageTs: "1",
+    triggerId: "",
+    metadata: "",
+    state: {},
+  });
+  await until(() =>
+    result.media.some(
+      (message) => (message as { type?: string }).type === "play",
+    ),
+  );
+  // It is picked up once, not offered again.
+  expect(store.sessionSaves([{ type: "channel", id: "channel" }])).toEqual([]);
+  await result.coordinator.endFromSlack();
+});
+
 test("queue message stages change one setting at a time from the Admin menu", () => {
   const result = setup();
   const change = (stage: string, what: string) => {
@@ -8873,7 +9001,10 @@ test("an end dialog confirmed after the session ended saves nothing", async () =
       save_to: { choice: { selected_option: { value: "channel" } } },
     }),
   );
-  expect(store.sessionSaves([channelSave])).toEqual([]);
+  // Only the queue the bot itself kept when the huddle ended is there.
+  expect(store.sessionSaves([channelSave]).map((save) => save.name)).toEqual([
+    "Left unfinished",
+  ]);
   expect(JSON.stringify(result.updatedModals.at(-1))).toContain(
     "The session had already ended, so it was not saved.",
   );

@@ -307,7 +307,12 @@ const offPlayerActions = new Set([
 // that show or change the Channel tab of Settings, and loading a save, which
 // a channel manager may delete as they load it. Opening the load dialog is
 // not one: its trigger ID would expire while Slack is asked.
+// The channel save a session leaves behind when the bot goes on its own with
+// songs still to play, for the next session there to pick back up.
+const unfinishedSaveName = "Left unfinished";
+
 const channelRoleActions = new Set([
+  "continue_last_queue",
   "open_settings",
   "save_channel_defaults",
   "clear_channel_defaults",
@@ -1217,6 +1222,8 @@ export class Coordinator {
       return this.jellyfinUi.action(interaction);
     if (interaction.actionId === "bulk_add_to_queue")
       return this.bulkAddLinks(interaction);
+    if (interaction.actionId === "continue_last_queue")
+      return this.continueUnfinished(interaction);
     if (
       interaction.type === "view_submission" &&
       interaction.actionId === "load_session_save"
@@ -8629,6 +8636,34 @@ export class Coordinator {
     });
   }
 
+  // The idle player's Continue button: loads the queue the last session in
+  // this channel left unfinished, as the Load dialog would, and deletes it
+  // once all of it fit.
+  private async continueUnfinished(interaction: Interaction) {
+    const save = this.unfinishedSave();
+    if (!save)
+      return this.notice(
+        interaction.userId,
+        "There is no unfinished queue to continue.",
+      );
+    return this.loadSubmission({
+      ...interaction,
+      type: "view_submission",
+      actionId: "load_session_save",
+      metadata: JSON.stringify({ sessionId: this.id }),
+      state: {
+        save: { selection: { selected_option: { value: save.id } } },
+        forget: { enabled: { selected_options: [{ value: "enabled" }] } },
+      },
+    } as Interaction);
+  }
+
+  private unfinishedSave() {
+    return this.store
+      .sessionSaves([{ type: "channel", id: this.roomId }])
+      .find((save) => save.name === unfinishedSaveName && save.tracks.length);
+  }
+
   // Queues a saved session's songs, credited to whoever loads it, and
   // applies the settings they may change. Like other additions, the songs
   // are staged in the action queue and prepared outside it, since preparing
@@ -8990,6 +9025,19 @@ export class Coordinator {
                       style: "primary",
                       value,
                     }),
+                  ),
+                  ...when(
+                    this.unfinishedSave(),
+                    button(
+                      "continue_last_queue",
+                      plain(
+                        truncate(
+                          `Continue where we left off · ${songCount(this.unfinishedSave()?.tracks.length ?? 0)}`,
+                          75,
+                        ),
+                      ),
+                      { value },
+                    ),
                   ),
                   // Shown whether or not there are saves, since the player
                   // is the same for everyone and each sees only some saves.
@@ -9898,6 +9946,14 @@ export class Coordinator {
       { event: "end_started", userId, reason, previousState: state },
       "Ending session",
     );
+    // The bot going on its own, rather than someone ending the session, keeps
+    // what was left to play for the next session in this channel.
+    if (endEvent(reason) === "huddle.left" && this.savableQueue().length)
+      this.saveSession(
+        this.botUserId,
+        { type: "channel", id: this.roomId },
+        unfinishedSaveName,
+      );
     this.state = "ended";
     this.playbackScrobbling?.finish();
     this.stopWork();
