@@ -2484,6 +2484,7 @@ test("the configured manager can save and clear the channel's defaults", async (
     anchorEnabled: true,
     progressBar: true,
     communism: false,
+    mediaMode: "music",
     permissions: ["add", "remove-own"],
   });
   expect(result.sessions).not.toContainEqual({ autoplay: "huddle" });

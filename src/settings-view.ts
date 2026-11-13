@@ -785,7 +785,7 @@ function channelBlocks(options: SettingsViewOptions) {
           value,
           confirm: confirm(
             "Save channel defaults?",
-            `New sessions in this channel will start with the settings and permissions shown in Settings, including changes not saved yet${options.session.communism ? ", and in communism mode, which can't be turned off" : ""}.`,
+            `New sessions in this channel will start with the settings and permissions shown in Settings, including changes not saved yet and the mode (music or video)${options.session.communism ? ", and in communism mode, which can't be turned off" : ""}.`,
             "Save",
           ),
         }),

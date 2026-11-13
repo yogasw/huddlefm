@@ -92,6 +92,8 @@ export type ChannelDefaults = {
   anchorQuietMinutes?: number;
   progressBar?: boolean;
   communism?: boolean;
+  // A channel that watches videos starts its sessions in video mode.
+  mediaMode?: MediaMode;
   permissions?: Capability[];
 };
 
@@ -131,6 +133,8 @@ export function parseChannelDefaults(
     defaults.progressBar = saved.progressBar;
   if (typeof saved.communism === "boolean")
     defaults.communism = saved.communism;
+  const mediaMode = modeOf(mediaModes, saved.mediaMode);
+  if (mediaMode) defaults.mediaMode = mediaMode;
   if (Array.isArray(saved.permissions))
     defaults.permissions = capabilities.filter((capability) =>
       (saved.permissions as unknown[]).includes(capability),
