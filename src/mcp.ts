@@ -149,6 +149,22 @@ export const mcpTools = [
     },
     ["track_ids"],
   ),
+  tool(
+    "remove",
+    "Remove songs from the queue; ids come from status",
+    "remove",
+    {
+      track_ids: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        description: "Queue song ids from status to take out",
+      },
+    },
+    ["track_ids"],
+  ),
+  tool("shuffle", "Shuffle the queue", "shuffle"),
+  tool("clear", "Remove every song from the queue", "clear"),
   tool("skip", "Skip to the next song", "skip"),
   tool("previous", "Go back to the previous song", "previous"),
   tool("pause", "Pause playback", "pause"),
@@ -309,6 +325,27 @@ async function call(
           : undefined
         : modeOf(kind, args[key]);
     if (value !== undefined) Object.assign(command, { [key]: value });
+  }
+  // Removing takes one song at a time, so several are taken out in turn and
+  // the agent hears which left and which could not.
+  if (definition.type === "remove") {
+    const ids = [...new Set(command.trackIds ?? [])];
+    if (!ids.length) return text({ error: "track_ids is required" }, true);
+    const removed: unknown[] = [];
+    const failed: { trackId: string; error: unknown }[] = [];
+    for (const trackId of ids) {
+      const outcome = (await session.run(host.actorId, {
+        type: "remove",
+        channel: target,
+        trackId,
+      })) as { ok?: boolean; removed?: unknown; error?: unknown };
+      if (outcome.ok) removed.push(outcome.removed ?? { trackId });
+      else failed.push({ trackId, error: outcome.error });
+    }
+    return text(
+      { ok: removed.length > 0, removed, ...(failed.length ? { failed } : {}) },
+      removed.length === 0,
+    );
   }
   const outcome = await session.run(host.actorId, command);
   // A song without who asked still plays, as a recommendation, and the

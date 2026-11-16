@@ -66,6 +66,8 @@ test("lists its tools", async () => {
   };
   expect(result.tools.map((item) => item.name)).toContain("skip");
   expect(result.tools.map((item) => item.name)).toContain("move");
+  for (const name of ["remove", "shuffle", "clear"])
+    expect(result.tools.map((item) => item.name)).toContain(name);
 });
 
 test("acts on the session of the named thread, as the configured user", async () => {
@@ -184,4 +186,32 @@ test("moves several songs in one call", async () => {
     position: 4,
   });
   expect(ran.at(-1)!.command).toMatchObject({ trackIds: ["t3"], position: 4 });
+});
+
+test("removes several songs one at a time, each once", async () => {
+  ran.length = 0;
+  const result = await call("remove", {
+    channel: "C01ALLOWED",
+    thread_ts: "1.0",
+    track_ids: ["t1", "t2", "t1", 3, ""],
+  });
+  expect(result.isError).toBe(false);
+  expect(ran.map(({ command }) => command)).toEqual([
+    { type: "remove", channel: "C01ALLOWED", trackId: "t1" },
+    { type: "remove", channel: "C01ALLOWED", trackId: "t2" },
+  ]);
+  expect(result.value.removed).toHaveLength(2);
+  const empty = await call("remove", {
+    channel: "C01ALLOWED",
+    thread_ts: "1.0",
+    track_ids: [],
+  });
+  expect(empty.isError).toBe(true);
+});
+
+test("shuffles and clears the queue", async () => {
+  ran.length = 0;
+  await call("shuffle", { channel: "C01ALLOWED", thread_ts: "1.0" });
+  await call("clear", { channel: "C01ALLOWED", thread_ts: "1.0" });
+  expect(ran.map(({ command }) => command.type)).toEqual(["shuffle", "clear"]);
 });
