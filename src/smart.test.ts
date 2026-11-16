@@ -1,0 +1,443 @@
+import { Database } from "bun:sqlite";
+import { expect, test } from "bun:test";
+import {
+  SmartRecs,
+  profileFromTags,
+  runScoringScript,
+  separation,
+  validateWeights,
+  type RankCandidate,
+  type RankContext,
+} from "./smart.ts";
+
+const offline = (async () =>
+  new Response("{}", { status: 404 })) as unknown as typeof fetch;
+
+const make = (
+  options: { random?: () => number; request?: typeof fetch } = {},
+) => {
+  let clock = 1_000_000;
+  const smart = new SmartRecs(
+    new Database(":memory:"),
+    { lastFmApiKey: "key" },
+    options.request ?? offline,
+    { now: () => (clock += 1000), random: options.random ?? (() => 0.9) },
+  );
+  return smart;
+};
+
+const context = (change: Partial<RankContext> = {}): RankContext => ({
+  sessionId: "s1",
+  listeners: ["UALICE", "UBOB"],
+  recent: [],
+  hour: 20,
+  ...change,
+});
+
+test("reads genres, moods, country and era from free-form tags", () => {
+  expect(
+    profileFromTags(["Indonesian", "pop", "galau", "2000s", "acoustic"]),
+  ).toEqual({
+    genres: ["pop", "acoustic"],
+    moods: ["sad"],
+    country: "ID",
+    language: "id",
+    era: "2000s",
+    energy: 2,
+  });
+  expect(profileFromTags(["kpop", "dance", "happy"])).toMatchObject({
+    genres: ["k-pop", "dance"],
+    moods: ["party", "upbeat"],
+    country: "KR",
+  });
+  expect(profileFromTags([])).toEqual({ genres: [], moods: [] });
+});
+
+test("an agent's profile is checked against the vocabularies", () => {
+  const smart = make();
+  expect(smart.setProfile({ title: "Song", artist: "Band" })).toMatchObject({
+    ok: false,
+  });
+  expect(
+    smart.setProfile({
+      title: "Song",
+      artist: "Band",
+      genres: ["Rock", "polka", "pop", "indie"],
+      moods: ["nostalgic"],
+      country: "id",
+      energy: 9,
+      era: "late nineties",
+    }),
+  ).toMatchObject({
+    ok: true,
+    profile: {
+      genres: ["rock", "pop"],
+      moods: ["nostalgic"],
+      country: "ID",
+      energy: 5,
+      source: "agent",
+    },
+  });
+  expect(smart.profile("song", "BAND")?.era).toBeUndefined();
+});
+
+test("looks a profile up from Last.fm tags and MusicBrainz once", async () => {
+  const urls: string[] = [];
+  const request = (async (url: string) => {
+    urls.push(url);
+    if (url.includes("track.getTopTags"))
+      return Response.json({
+        toptags: {
+          tag: [
+            { name: "rock", count: 100 },
+            { name: "nostalgic", count: 60 },
+            { name: "90s", count: 40 },
+          ],
+        },
+      });
+    if (url.includes("musicbrainz"))
+      return Response.json({ artists: [{ score: 100, country: "id" }] });
+    return Response.json({ error: 6 });
+  }) as unknown as typeof fetch;
+  const smart = make({ request });
+  const profile = await smart.ensureProfile("Song", "Band");
+  expect(profile).toMatchObject({
+    genres: ["rock"],
+    moods: ["nostalgic"],
+    era: "1990s",
+    country: "ID",
+    source: "lastfm",
+  });
+  await smart.ensureProfile("Song", "Band");
+  expect(urls.filter((url) => url.includes("getTopTags"))).toHaveLength(1);
+});
+
+test("taste learns from what a person keeps, removes and skips", () => {
+  const smart = make();
+  smart.setProfile({
+    title: "Calm",
+    artist: "A",
+    genres: ["acoustic"],
+    moods: ["chill"],
+  });
+  smart.setProfile({
+    title: "Loud",
+    artist: "B",
+    genres: ["metal"],
+    moods: ["angry"],
+  });
+  for (let index = 0; index < 3; index++)
+    smart.recordOutcome(
+      { title: "Calm", artist: "A", addedBy: "UALICE", outcome: "finished" },
+      context(),
+    );
+  smart.recordOutcome(
+    {
+      title: "Loud",
+      artist: "B",
+      addedBy: "agent",
+      actor: "UALICE",
+      outcome: "removed",
+      queuedSeconds: 10,
+    },
+    context(),
+  );
+  const taste = smart.taste("UALICE");
+  expect(taste.genres.acoustic).toBe(3);
+  expect(taste.genres.metal).toBe(-1);
+  // Bob only listened while Alice's song played out.
+  expect(smart.taste("UBOB").genres.acoustic).toBeCloseTo(0.9);
+});
+
+const candidate = (
+  title: string,
+  artist: string,
+  change: Partial<RankCandidate> = {},
+): RankCandidate => ({
+  title,
+  artist,
+  reference: `https://example.com/${title}`,
+  forUsers: [],
+  sources: ["similar"],
+  discovery: false,
+  rank: 0,
+  ...change,
+});
+
+test("ranks for who is listening and keeps rejected genres out", async () => {
+  const smart = make();
+  smart.setProfile({
+    title: "Kept",
+    artist: "A",
+    genres: ["pop"],
+    moods: ["nostalgic"],
+    energy: 2,
+  });
+  smart.setProfile({
+    title: "Gone",
+    artist: "B",
+    genres: ["metal"],
+    energy: 5,
+  });
+  smart.setProfile({
+    title: "Fits",
+    artist: "C",
+    genres: ["pop"],
+    moods: ["nostalgic"],
+    energy: 2,
+  });
+  smart.setProfile({
+    title: "Heavy",
+    artist: "D",
+    genres: ["metal"],
+    energy: 5,
+  });
+  for (const user of ["UALICE", "UBOB"]) {
+    smart.recordOutcome(
+      { title: "Kept", artist: "A", addedBy: user, outcome: "finished" },
+      context(),
+    );
+    smart.recordOutcome(
+      {
+        title: "Gone",
+        artist: "B",
+        addedBy: "agent",
+        actor: user,
+        outcome: "removed",
+      },
+      context(),
+    );
+  }
+  const result = await smart.rank(
+    [
+      candidate("Heavy", "D", { rank: 0 }),
+      candidate("Fits", "C", { rank: 1, forUsers: ["UALICE", "UBOB"] }),
+    ],
+    context({ recent: [{ title: "Kept", artist: "A" }] }),
+    1,
+  );
+  expect(result.picks.map((pick) => pick.title)).toEqual(["Fits"]);
+  expect(result.picks[0]!.why).toContain("suits several listeners");
+  expect(result.listeners[0]).toMatchObject({
+    id: "UALICE",
+    likes: { genres: ["pop"] },
+    avoids: { genres: ["metal"] },
+  });
+  expect(result.mood).toMatchObject({ genres: ["pop"], energy: 2 });
+});
+
+test("leans to whoever asked last, for a few songs", async () => {
+  const smart = make();
+  smart.setProfile({ title: "Hers", artist: "A", genres: ["k-pop"] });
+  smart.setProfile({ title: "His", artist: "B", genres: ["jazz"] });
+  smart.setProfile({ title: "More K", artist: "C", genres: ["k-pop"] });
+  smart.setProfile({ title: "More Jazz", artist: "D", genres: ["jazz"] });
+  smart.recordOutcome(
+    { title: "Hers", artist: "A", addedBy: "UALICE", outcome: "finished" },
+    context(),
+  );
+  smart.recordOutcome(
+    { title: "His", artist: "B", addedBy: "UBOB", outcome: "finished" },
+    context(),
+  );
+  const pick = async (songsAgo: number) =>
+    (
+      await smart.rank(
+        [candidate("More Jazz", "D"), candidate("More K", "C")],
+        context({ lastRequester: { userId: "UALICE", songsAgo } }),
+        1,
+      )
+    ).picks[0]!.title;
+  expect(await pick(0)).toBe("More K");
+  expect(await pick(5)).toBe("More Jazz");
+});
+
+test("gives a share of picks to something new, less while picks are rejected", async () => {
+  const smart = make();
+  const many = Array.from({ length: 10 }, (_, index) =>
+    candidate(`Song ${index}`, `Artist ${index}`, {
+      rank: index,
+      discovery: index >= 5,
+    }),
+  );
+  const first = await smart.rank(many, context(), 5);
+  expect(first.picks.filter((pick) => pick.explore)).toHaveLength(1);
+  for (let index = 0; index < 10; index++)
+    smart.recordOutcome(
+      {
+        title: `Bad ${index}`,
+        artist: "X",
+        addedBy: "agent",
+        actor: "UALICE",
+        outcome: "removed",
+      },
+      context(),
+    );
+  const after = await smart.rank(many, context(), 5);
+  expect(after.explore.share).toBeLessThan(first.explore.share);
+  expect(after.explore.recentRejection).toBe(1);
+});
+
+test("scoring scripts run sandboxed and bounded", async () => {
+  expect(
+    await runScoringScript("function score(song) { return song.n * 10; }", [
+      { song: { n: 0.1 }, ctx: {} },
+      { song: { n: 2 }, ctx: {} },
+    ]),
+  ).toEqual([1, 5]);
+  expect(
+    await runScoringScript(
+      "function score() { return typeof fetch + typeof Bun + typeof require === 'undefinedundefinedundefined' ? 1 : -1; }",
+      [{ song: {}, ctx: {} }],
+    ),
+  ).toEqual([1]);
+  expect(
+    runScoringScript("function score() { while (true) {} }", [
+      { song: {}, ctx: {} },
+    ]),
+  ).rejects.toThrow();
+  expect(
+    runScoringScript("const x = 1;", [{ song: {}, ctx: {} }]),
+  ).rejects.toThrow();
+});
+
+test("a strategy is evaluated, tried, then promoted or rejected by outcomes", async () => {
+  const smart = make({ random: () => 0.1 });
+  expect(validateWeights({ genreMatch: 99, nope: 1 })).toMatchObject({
+    weights: { genreMatch: 5 },
+    errors: ["unknown weight nope"],
+  });
+  expect(
+    await smart.proposeStrategy({
+      script: "function score() { while(true){} }",
+    }),
+  ).toMatchObject({ ok: false });
+  const proposed = await smart.proposeStrategy({
+    weights: { genreMatch: 2 },
+    script: "function score(song) { return song.profile ? 1 : 0; }",
+    note: "lean on genres",
+  });
+  expect(proposed).toMatchObject({ ok: true, version: 1, status: "trial" });
+  expect(smart.activeStrategy().version).toBe(0);
+  // Trial picks get removed, the active strategy's picks play out.
+  const trialPicks = await smart.rank(
+    Array.from({ length: 20 }, (_, index) =>
+      candidate(`T${index}`, "A", { rank: index }),
+    ),
+    context(),
+    10,
+  );
+  expect(trialPicks.strategy.version).toBe(1);
+  for (let index = 0; index < 16; index++) {
+    const title = `T${index % 10}`;
+    smart.recordOutcome(
+      {
+        title,
+        artist: "A",
+        addedBy: "agent",
+        actor: "UALICE",
+        outcome: "removed",
+      },
+      context(),
+    );
+    smart.recordOutcome(
+      {
+        title: `C${index}`,
+        artist: "B",
+        addedBy: "agent",
+        outcome: "finished",
+      },
+      context(),
+    );
+  }
+  expect(smart.trialStrategy()).toBeUndefined();
+  expect(smart.strategies()[0]).toMatchObject({
+    version: 1,
+    status: "rejected",
+  });
+  expect(smart.activeStrategy().version).toBe(0);
+  const evaluation = await smart.evaluate({ weights: { rejected: 3 } });
+  expect(evaluation).toMatchObject({ ok: true, summary: { outcomes: 32 } });
+});
+
+test("rolls back to an earlier version or the defaults", async () => {
+  const smart = make();
+  await smart.proposeStrategy({ weights: { shared: 2 } });
+  expect(smart.rollback(1)).toEqual({ ok: true, active: 1 });
+  expect(smart.activeStrategy().weights.shared).toBe(2);
+  expect(smart.rollback(7)).toMatchObject({ ok: false });
+  expect(smart.rollback(0)).toMatchObject({ ok: true, active: 0 });
+  expect(smart.activeStrategy().version).toBe(0);
+});
+
+test("separation is the share of kept-over-rejected pairs", () => {
+  expect(separation([2, 3], [1])).toBe(1);
+  expect(separation([1], [1])).toBe(0.5);
+  expect(separation([], [1])).toBeUndefined();
+});
+
+test("the vocabulary lives in the data and grows without a release", async () => {
+  const db = new Database(":memory:");
+  const smart = new SmartRecs(db, {}, offline);
+  expect(smart.vocabulary().genres.map((entry) => entry.value)).toContain(
+    "pop",
+  );
+  expect(
+    smart.setVocabulary(
+      {
+        kind: "genre",
+        value: "City Pop",
+        keys: ["city pop", "citypop"],
+        energy: 3,
+        priority: 5,
+        note: "keeps coming up",
+      },
+      "UALICE",
+    ),
+  ).toMatchObject({ ok: true, entry: { value: "city pop", origin: "custom" } });
+  // Matched before the broad "pop" thanks to its priority.
+  const request = (async (url: string) =>
+    url.includes("track.getTopTags")
+      ? Response.json({
+          toptags: {
+            tag: [
+              { name: "city pop", count: 9 },
+              { name: "japanese", count: 5 },
+              { name: "80s", count: 3 },
+            ],
+          },
+        })
+      : Response.json({ error: 6 })) as unknown as typeof fetch;
+  const withTags = new SmartRecs(db, { lastFmApiKey: "key" }, request);
+  expect(await withTags.ensureProfile("Plastic", "Singer")).toMatchObject({
+    genres: ["city pop", "pop"],
+    country: "JP",
+  });
+  expect(
+    withTags.setProfile({ title: "A", artist: "B", genres: ["city pop"] }),
+  ).toMatchObject({ ok: true });
+  expect(smart.setVocabulary({ kind: "place", value: "Japan" })).toMatchObject({
+    ok: false,
+  });
+  expect(smart.deleteVocabulary("genre", "pop", "too broad")).toMatchObject({
+    ok: true,
+  });
+  // A new instance on the same data keeps the removal: defaults are not re-added.
+  const again = new SmartRecs(db, {}, offline);
+  expect(again.vocabulary().genres.map((entry) => entry.value)).not.toContain(
+    "pop",
+  );
+  expect(again.resetVocabulary("genre", "pop")).toMatchObject({ ok: true });
+  expect(again.vocabulary().genres.map((entry) => entry.value)).toContain(
+    "pop",
+  );
+  expect(again.vocabularyLog().map((item) => item.action)).toEqual([
+    "reset",
+    "delete",
+    "add",
+  ]);
+  expect(again.vocabularyLog().at(-1)).toMatchObject({
+    by: "UALICE",
+    note: "keeps coming up",
+  });
+});

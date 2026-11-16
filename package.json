@@ -30,6 +30,7 @@
     "pino-roll": "^4.0.0",
     "posthog-node": "^5.73.1",
     "protobufjs": "8.8.1",
+    "quickjs-emscripten": "0.31.0",
     "transliteration": "^2.7.0",
     "wanakana": "^5.3.1",
     "ytmusic-api": "5.3.1",
