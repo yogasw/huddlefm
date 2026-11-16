@@ -65,6 +65,7 @@ test("lists its tools", async () => {
     result: { tools: { name: string }[] };
   };
   expect(result.tools.map((item) => item.name)).toContain("skip");
+  expect(result.tools.map((item) => item.name)).toContain("move");
 });
 
 test("acts on the session of the named thread, as the configured user", async () => {
@@ -160,4 +161,27 @@ test("credits a song to who asked the agent for it", async () => {
   });
   expect(missing.isError).toBe(false);
   expect(missing.value.note).toContain("recommendation");
+});
+
+test("moves several songs in one call", async () => {
+  ran.length = 0;
+  const result = await call("move", {
+    channel: "C01ALLOWED",
+    thread_ts: "1.0",
+    track_ids: ["t1", "t2", 3, ""],
+    play_next: true,
+  });
+  expect(result.isError).toBe(false);
+  expect(ran.at(-1)!.command).toMatchObject({
+    type: "move",
+    trackIds: ["t1", "t2"],
+    playNext: true,
+  });
+  await call("move", {
+    channel: "C01ALLOWED",
+    thread_ts: "1.0",
+    track_ids: ["t3"],
+    position: 4,
+  });
+  expect(ran.at(-1)!.command).toMatchObject({ trackIds: ["t3"], position: 4 });
 });

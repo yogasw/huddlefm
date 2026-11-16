@@ -1892,6 +1892,88 @@ export class Coordinator {
     });
   }
 
+  // Moves several queued songs as one block: they keep the order given and
+  // the first lands on the position, so a few requests can jump ahead of
+  // recommendations in one step instead of one move per song.
+  async agentMoveMany(
+    userId: string,
+    trackIds: string[],
+    options: { playNext?: boolean; position?: number },
+    signal?: AbortSignal,
+  ) {
+    return this.enqueue(async () => {
+      throwIfAborted(signal);
+      if (!this.can(userId, "manage-queue")) return this.denied(userId);
+      const ids = [...new Set(trackIds)];
+      const missing = ids.filter(
+        (id) => !this.queue.some((track) => track.id === id),
+      );
+      if (missing.length)
+        return {
+          ok: false as const,
+          error: `Not in the queue: ${missing.join(", ")}.`,
+        };
+      let target = 0;
+      if (!options.playNext) {
+        if (options.position === undefined)
+          return {
+            ok: false as const,
+            error: "Provide position or playNext.",
+          };
+        if (
+          !Number.isSafeInteger(options.position) ||
+          options.position < 1 ||
+          options.position > this.queue.length
+        )
+          return {
+            ok: false as const,
+            error: `Position must be between 1 and ${this.queue.length}.`,
+          };
+        target = options.position - 1;
+      }
+      const before = this.queue.map((track) => track.id);
+      const chosen = ids.map((id) => this.queue.find((t) => t.id === id)!);
+      const rest = this.queue.filter((track) => !ids.includes(track.id));
+      const at = Math.min(target, rest.length);
+      const next = [...rest.slice(0, at), ...chosen, ...rest.slice(at)];
+      const moved = chosen.filter(
+        (track) => before.indexOf(track.id) !== next.indexOf(track),
+      );
+      if (moved.length) {
+        this.queue.splice(0, this.queue.length, ...next);
+        for (const track of moved) {
+          const from = before.indexOf(track.id);
+          const to = next.indexOf(track);
+          this.audit.record("queue.reordered", userId, {
+            sessionId: this.id,
+            trackId: track.id,
+            from,
+            to,
+            ...(options.playNext ? { reason: "play_next" } : {}),
+          });
+          this.notifyIntegrations("queue.reordered", {
+            trackId: track.id,
+            from,
+            to,
+          });
+          this.store.incrementUsage("reordered");
+        }
+        this.queueChanged();
+        await this.render();
+        this.syncPreloads();
+      }
+      return {
+        ok: true as const,
+        moved: chosen.map((track) => ({
+          id: track.id,
+          title: track.title,
+          artist: track.artist,
+          position: next.indexOf(track) + 1,
+        })),
+      };
+    });
+  }
+
   async agentShuffle(userId: string, signal?: AbortSignal) {
     return this.enqueue(async () => {
       throwIfAborted(signal);
@@ -3943,6 +4025,11 @@ export class Coordinator {
           return { ok: false as const, error: "trackId is required." };
         return this.agentRemove(userId, command.trackId);
       case "move":
+        if (command.trackIds?.length)
+          return this.agentMoveMany(userId, command.trackIds, {
+            playNext: command.playNext,
+            position: command.position,
+          });
         if (!command.trackId)
           return { ok: false as const, error: "trackId is required." };
         return this.agentMove(userId, command.trackId, {

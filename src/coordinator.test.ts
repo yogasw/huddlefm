@@ -10167,3 +10167,96 @@ test("a service turned on from a DM only scrobbles for those in the huddle", asy
   Reflect.set(result.coordinator, "playbackScrobbling", undefined);
   await result.coordinator.endFromSlack();
 });
+
+test("agent moves several queued songs as one block", async () => {
+  const directory = `${tmpdir()}/huddlefm-move-${crypto.randomUUID()}`;
+  await mkdir(directory, { recursive: true });
+  for (const letter of "abcdef")
+    await Bun.write(`${directory}/${letter}.opus`, "audio");
+  const tracks = {
+    resolve: async (value: string) => {
+      const letter = value.slice(-1);
+      return {
+        sourceInput: value,
+        canonicalUrl: value,
+        sourceId: letter.repeat(11),
+        title: letter.toUpperCase(),
+        artist: "Artist",
+        duration: 100,
+      };
+    },
+    prepare: async (metadata: { sourceId: string }) =>
+      `${directory}/${metadata.sourceId[0]}.opus`,
+  } as unknown as TrackCatalog;
+  const result = setup(tracks);
+  await result.coordinator.start();
+  for (const letter of "abcdef") {
+    await result.coordinator.action(
+      interaction(
+        result.coordinator,
+        "add_track_to_queue",
+        `https://${letter}`,
+      ),
+    );
+    await Bun.sleep(0);
+  }
+  const queue = () =>
+    (
+      result.coordinator.agentStatus("host") as {
+        queue: { id: string; title: string }[];
+      }
+    ).queue;
+  const ids = Object.fromEntries(
+    queue().map((track) => [track.title, track.id]),
+  );
+  const titles = () =>
+    queue()
+      .map((track) => track.title)
+      .join("");
+  expect(titles()).toBe("BCDEF");
+
+  // Two songs from the bottom go first, in the order asked.
+  expect(
+    await result.coordinator.agentMoveMany("host", [ids.F!, ids.D!], {
+      playNext: true,
+    }),
+  ).toMatchObject({
+    ok: true,
+    moved: [
+      { title: "F", position: 1 },
+      { title: "D", position: 2 },
+    ],
+  });
+  expect(titles()).toBe("FDBCE");
+
+  // A block that includes a song above the target still lands as a block.
+  expect(
+    await result.coordinator.agentMoveMany("host", [ids.F!, ids.C!], {
+      position: 3,
+    }),
+  ).toMatchObject({ ok: true });
+  expect(titles()).toBe("DBFCE");
+
+  // Unknown ids and positions out of range change nothing.
+  expect(
+    await result.coordinator.agentMoveMany("host", [ids.B!, "nope"], {
+      playNext: true,
+    }),
+  ).toMatchObject({ ok: false, error: "Not in the queue: nope." });
+  expect(
+    await result.coordinator.agentMoveMany("host", [ids.B!], { position: 9 }),
+  ).toMatchObject({ ok: false });
+  expect(
+    await result.coordinator.agentMoveMany("host", [ids.B!], {}),
+  ).toMatchObject({ ok: false, error: "Provide position or playNext." });
+  expect(titles()).toBe("DBFCE");
+
+  // Someone without queue rights is refused.
+  expect(
+    await result.coordinator.agentMoveMany("guest", [ids.E!], {
+      playNext: true,
+    }),
+  ).toMatchObject({ ok: false });
+  expect(titles()).toBe("DBFCE");
+  await result.coordinator.endFromSlack();
+});

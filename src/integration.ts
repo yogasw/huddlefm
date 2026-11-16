@@ -66,6 +66,8 @@ export type IntegrationCommand = {
   query?: string;
   reference?: string;
   trackId?: string;
+  // Several songs moved together, in this order, as one block.
+  trackIds?: string[];
   direction?: "up" | "down";
   playNext?: boolean;
   position?: number;
