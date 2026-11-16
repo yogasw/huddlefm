@@ -33,6 +33,7 @@ export const integrationCommandTypes = [
   "request_control",
   "status",
   "history",
+  "recommend",
   "search",
   "add",
   "remove",

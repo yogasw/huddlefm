@@ -41,6 +41,7 @@ function setup(
   workspaceAdmins?: WorkspaceAdmins,
   duckingMode: DuckingMode = "gentle",
   channelManagers?: ChannelManagers,
+  smart?: import("./smart.ts").SmartRecs,
 ) {
   const posted: unknown[] = [];
   const updates: unknown[] = [];
@@ -227,6 +228,9 @@ function setup(
     recommendations,
     workspaceAdmins,
     channelManagers,
+    () => 0,
+    undefined,
+    smart,
   );
   return {
     coordinator,
@@ -10320,5 +10324,98 @@ test("history tells an agent who took out its recommendation, and how soon", asy
     limit: 1,
   });
   expect((limited as { events: unknown[] }).events).toHaveLength(1);
+  await test.coordinator.endFromSlack();
+});
+
+test("recommend ranks the catalog's songs for the listeners and learns from removals", async () => {
+  const { Database } = await import("bun:sqlite");
+  const { SmartRecs } = await import("./smart.ts");
+  const smart = new SmartRecs(
+    new Database(":memory:"),
+    {},
+    (async () =>
+      new Response("{}", { status: 404 })) as unknown as typeof fetch,
+    { random: () => 0.9 },
+  );
+  smart.setProfile({ title: "Fits", artist: "Band", genres: ["pop"] });
+  const penalized: unknown[] = [];
+  const metadata = (title: string) => ({
+    sourceInput: `https://example.com/${title}`,
+    canonicalUrl: `https://example.com/${title}`,
+    sourceId: title.padEnd(11, "x"),
+    title,
+    artist: "Band",
+  });
+  const catalog = {
+    prefetchUsers() {},
+    prefetchUser() {},
+    noteSessions() {},
+    refreshUser() {},
+    penalize: (...args: unknown[]) => penalized.push(args),
+    huddleMixOptedIn: () => true,
+    autoplayCandidates: async () =>
+      ["Fits", "Other"].map((title) => ({
+        sourceId: metadata(title).sourceId,
+        score: 1,
+        seedCount: 0,
+        discovery: false,
+        listenerIds: ["host"],
+        sources: ["similar"],
+        metadata: metadata(title),
+      })),
+  } as unknown as RecommendationCatalog;
+  const test = setup(
+    {
+      resolve: async (input: string) => metadata(input.split("/").at(-1)!),
+      resolveUrl: async (input: string) => metadata(input.split("/").at(-1)!),
+      prepare: async () => "track.opus",
+    } as unknown as TrackCatalog,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    new Set(),
+    undefined,
+    catalog,
+    undefined,
+    undefined,
+    undefined,
+    smart,
+  );
+  await test.coordinator.start();
+  Reflect.set(test.coordinator, "current", {
+    id: "now",
+    requesterId: "host",
+    sourceId: "now",
+    title: "Now",
+    artist: "Band",
+    status: "ready",
+  });
+  const result = (await test.coordinator.mcpCommand("host", {
+    type: "recommend",
+    limit: 2,
+  })) as Record<string, any>;
+  expect(result.ok).toBe(true);
+  expect(result.picks.map((pick: any) => pick.reference)).toEqual([
+    "https://example.com/Fits",
+    "https://example.com/Other",
+  ]);
+  expect(result.picks[0].profile).toMatchObject({ genres: ["pop"] });
+  expect(result.missingProfiles).toContainEqual({
+    title: "Other",
+    artist: "Band",
+  });
+  await test.coordinator.mcpCommand("host", {
+    type: "add",
+    reference: result.picks[1].reference,
+  });
+  const queued = (
+    Reflect.get(test.coordinator, "queue") as { id: string; title: string }[]
+  ).find((entry) => entry.title === "Other")!;
+  await test.coordinator.agentRemove("host", queued.id);
+  expect(penalized).toHaveLength(1);
+  expect(smart.outcomes({ addedBy: "agent" })).toMatchObject([
+    { title: "Other", outcome: "removed", actor: "host" },
+  ]);
   await test.coordinator.endFromSlack();
 });

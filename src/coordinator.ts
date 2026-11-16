@@ -1,3 +1,4 @@
+import type { SmartRecs } from "./smart.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { capture as captureAnalytics } from "./analytics.ts";
 import type { AuditLog } from "./audit-log.ts";
@@ -532,6 +533,9 @@ export class Coordinator {
   // Slack users connected to the meeting on attendees other than HuddleFM's.
   private attendeeUsers = new Set<string>();
   private timeline: TimelineEvent[] = [];
+  // Who last asked for a song, and how many songs have started since.
+  private lastRequest?: { userId: string; startedAt: number };
+  private songsStarted = 0;
   private queuedAt = new Map<string, number>();
   // Preparations of tracks already prepared, for the other mode.
   private reprepares = new Map<string, AbortController>();
@@ -685,6 +689,7 @@ export class Coordinator {
     /** How many sessions, this one included, are in video mode. */
     private videoSessions: () => number = () => 0,
     jellyfin?: Jellyfin,
+    private smart?: SmartRecs,
   ) {
     this.audit = {
       record: (event, actorId, details = {}) =>
@@ -4045,6 +4050,8 @@ export class Coordinator {
         return this.integrationStatus(userId);
       case "history":
         return this.integrationHistory(userId, command.limit);
+      case "recommend":
+        return this.integrationRecommend(userId, command.limit);
       case "search":
         if (!command.query)
           return { ok: false as const, error: "query is required." };
@@ -4145,6 +4152,89 @@ export class Coordinator {
           }
         : {}),
       events: this.timeline.slice(-count),
+    };
+  }
+
+  // Candidates from the recommendation catalog, ranked for the people
+  // listening by smart recommendations, with the context an agent needs to
+  // choose among them: who listens and what they like or avoid, the mood,
+  // who asked last, and which songs still lack a profile it could fill in.
+  private async integrationRecommend(userId: string, limit = 5) {
+    if (!this.canUsePlayer(userId))
+      return {
+        ok: false as const,
+        error: "Join the huddle before using the player.",
+      };
+    if (!this.recommendations || !this.smart)
+      return {
+        ok: false as const,
+        error: "Recommendations are not available here.",
+      };
+    const count = Math.max(1, Math.min(10, Math.floor(limit)));
+    const recent = this.history.slice(-autoplayRecentWindow);
+    const excluded = new Set([
+      this.current?.sourceId,
+      ...this.queue.map((track) => track.sourceId),
+      ...recent.map((track) => track.sourceId),
+      ...this.autoplayRejected,
+    ]);
+    const [safe, discovered] = await Promise.all([
+      this.recommendations.autoplayCandidates(
+        this.catalogOptions(recent, excluded, false),
+      ),
+      this.recommendations
+        .autoplayCandidates(this.catalogOptions(recent, excluded, true))
+        .catch(() => []),
+    ]);
+    const seen = new Set<string>();
+    const candidates = [...safe, ...discovered]
+      .filter((item) => {
+        if (seen.has(item.sourceId)) return false;
+        seen.add(item.sourceId);
+        return true;
+      })
+      .slice(0, 40)
+      .map((item, rank) => ({
+        title: item.metadata.title,
+        artist: item.metadata.artist,
+        reference: item.metadata.canonicalUrl || item.metadata.sourceInput,
+        forUsers: item.listenerIds,
+        sources: item.sources,
+        discovery: item.discovery,
+        rank,
+      }));
+    const context = this.rankContext();
+    const ranked = await this.smart.rank(candidates, context, count);
+    const unprofiled = [
+      ...context.recent,
+      ...ranked.picks.map(({ title, artist }) => ({ title, artist })),
+    ]
+      .filter((track) => !this.smart!.profile(track.title, track.artist))
+      .slice(0, 8);
+    for (const track of unprofiled)
+      void this.smart.ensureProfile(track.title, track.artist);
+    return {
+      ok: true as const,
+      ...ranked,
+      ...(context.lastRequester
+        ? { lastRequester: context.lastRequester }
+        : {}),
+      hour: context.hour,
+      recent: this.timeline
+        .filter((item) =>
+          ["track.finished", "track.skipped", "queue.removed"].includes(
+            item.event,
+          ),
+        )
+        .slice(-10),
+      ...(unprofiled.length
+        ? {
+            missingProfiles: unprofiled,
+            note: "Add songs with add (reference from picks, no requested_by). Songs in missingProfiles have no genre or mood yet; fill them with profile_set when you know them.",
+          }
+        : {
+            note: "Add songs with add (reference from picks, no requested_by).",
+          }),
     };
   }
 
@@ -4364,6 +4454,78 @@ export class Coordinator {
     }
   }
 
+  // Feeds smart recommendations: who asked last, song profiles, and what
+  // became of each song, for the people listening at the time.
+  private learn(event: string, entry: Entry, item: TimelineEvent) {
+    if (
+      event === "queue.added" &&
+      item.addedBy !== "agent" &&
+      item.addedBy !== "autoplay" &&
+      item.addedBy !== this.botUserId
+    )
+      this.lastRequest = {
+        userId: item.addedBy,
+        startedAt: this.songsStarted,
+      };
+    if (event === "track.started") {
+      this.songsStarted++;
+      void this.smart?.ensureProfile(entry.title, entry.artist);
+    }
+    if (!this.smart) return;
+    const outcome =
+      event === "track.finished"
+        ? "finished"
+        : event === "track.skipped"
+          ? "skipped"
+          : event === "queue.removed" && item.reason !== "failed" && item.actor
+            ? "removed"
+            : undefined;
+    if (!outcome) return;
+    try {
+      this.smart.recordOutcome(
+        {
+          title: entry.title,
+          artist: entry.artist,
+          addedBy: item.addedBy,
+          ...(item.actor ? { actor: item.actor } : {}),
+          outcome,
+          ...(item.playedSeconds !== undefined
+            ? { playedSeconds: item.playedSeconds }
+            : {}),
+          ...(item.queuedSeconds !== undefined
+            ? { queuedSeconds: item.queuedSeconds }
+            : {}),
+        },
+        this.rankContext(),
+      );
+    } catch (error) {
+      this.log.warn(
+        { event: "outcome_record_failed", err: error },
+        "Could not record a song outcome",
+      );
+    }
+  }
+
+  private rankContext() {
+    return {
+      sessionId: this.id,
+      listeners: this.listenerIds(),
+      recent: [
+        ...this.history.slice(-8),
+        ...(this.current ? [this.current] : []),
+      ].map((track) => ({ title: track.title, artist: track.artist })),
+      ...(this.lastRequest
+        ? {
+            lastRequester: {
+              userId: this.lastRequest.userId,
+              songsAgo: this.songsStarted - this.lastRequest.startedAt,
+            },
+          }
+        : {}),
+      hour: new Date().getHours(),
+    };
+  }
+
   private remember(
     event: string,
     entry: Entry,
@@ -4395,6 +4557,7 @@ export class Coordinator {
     if (event === "track.started") this.queuedAt.delete(entry.id);
     if (event === "track.skipped" || event === "track.finished")
       item.playedSeconds = Math.round(this.playbackSeconds);
+    this.learn(event, entry, item);
     this.timeline.push(item);
     if (this.timeline.length > timelineLimit)
       this.timeline.splice(0, this.timeline.length - timelineLimit);
@@ -5259,6 +5422,46 @@ export class Coordinator {
     })();
   }
 
+  // What the recommendation catalog is asked for: who is listening, what
+  // plays and played, what to leave out and whose turn it is.
+  private catalogOptions(
+    recent: Entry[],
+    excluded: Set<string | undefined>,
+    discover: boolean,
+  ) {
+    const credited: Record<string, number> = {};
+    for (const listener of this.autoplayCredits.flat())
+      credited[listener] = (credited[listener] ?? 0) + 1;
+    const listeners = this.listenerIds();
+    const nowPlaying = this.current ?? this.history.at(-1);
+    return {
+      userIds: listeners,
+      nowPlaying,
+      // An autoplay pick was for whoever it was credited to; anything
+      // else was for whoever queued it.
+      nowPlayingListenerIds: nowPlaying?.automatic
+        ? (nowPlaying.listenerIds ?? [])
+        : nowPlaying
+          ? [nowPlaying.requesterId]
+          : [],
+      recent: [...recent, ...(this.current ? [this.current] : [])],
+      exclude: excluded,
+      skipped: {
+        sourceIds: this.autoplayRejected,
+        artists: this.autoplayRejectedArtists,
+        tracks: recent,
+      },
+      discover,
+      credited,
+      lastCredited: this.autoplayCredits.at(-1),
+      artistRun: this.artistRun(),
+      fatigue: loadFatigue(this.store, {
+        userIds: listeners,
+        roomId: this.roomId,
+      }),
+    };
+  }
+
   private async recommend(
     context: string,
     seeds: string[],
@@ -5352,37 +5555,9 @@ export class Coordinator {
         // listened to so the mix is not only shared favourites.
         const discover =
           this.autoplaySinceDiscovery >= this.autoplayDiscoveryInterval - 1;
-        const credited: Record<string, number> = {};
-        for (const listener of this.autoplayCredits.flat())
-          credited[listener] = (credited[listener] ?? 0) + 1;
-        const listeners = this.listenerIds();
-        const nowPlaying = this.current ?? this.history.at(-1);
-        const extras = await this.recommendations.autoplayCandidates({
-          userIds: listeners,
-          nowPlaying,
-          // An autoplay pick was for whoever it was credited to; anything
-          // else was for whoever queued it.
-          nowPlayingListenerIds: nowPlaying?.automatic
-            ? (nowPlaying.listenerIds ?? [])
-            : nowPlaying
-              ? [nowPlaying.requesterId]
-              : [],
-          recent: [...recent, ...(this.current ? [this.current] : [])],
-          exclude: excluded,
-          skipped: {
-            sourceIds: this.autoplayRejected,
-            artists: this.autoplayRejectedArtists,
-            tracks: recent,
-          },
-          discover,
-          credited,
-          lastCredited: this.autoplayCredits.at(-1),
-          artistRun: this.artistRun(),
-          fatigue: loadFatigue(this.store, {
-            userIds: listeners,
-            roomId: this.roomId,
-          }),
-        });
+        const extras = await this.recommendations.autoplayCandidates(
+          this.catalogOptions(recent, excluded, discover),
+        );
         // The catalog has already ordered these.
         extras.forEach((extra, index) => {
           ranked.set(extra.sourceId, {
@@ -6670,7 +6845,9 @@ export class Coordinator {
     this.queue.splice(this.queue.indexOf(entry), 1);
     this.preparations.get(entry.id)?.abort();
     this.store.removeTrack(entry.id);
-    if (entry.automatic) this.rejectSkipped(entry, userId);
+    // An agent's recommendation taken out says as much as an autoplay pick.
+    if (entry.automatic || entry.requesterId === recommendedBy)
+      this.rejectSkipped(entry, userId);
     this.audit.record("track.removed", userId, {
       sessionId: this.id,
       ...auditTrack(entry),

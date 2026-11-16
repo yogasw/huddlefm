@@ -40,6 +40,7 @@ import {
   webhookModal,
 } from "./webhook.ts";
 import { mcpResponse } from "./mcp.ts";
+import { SmartRecs } from "./smart.ts";
 import {
   SlackHuddleAdapter,
   huddleHasParticipant,
@@ -156,6 +157,10 @@ const jellyfin = config.jellyfin
   : undefined;
 const lyrics = new LyricsCatalog();
 const recommendations = new RecommendationCatalog(store, catalog, config);
+const smart = new SmartRecs(store.db, {
+  lastFmApiKey: config.lastFmApiKey,
+  userAgent: "HuddleFM/1.0 (self-hosted Slack music bot)",
+});
 const slackApp = new SlackAppAdapter(config);
 const workspaceAdmins = new WorkspaceAdmins(
   (userId) => slackApp.workspaceAdmin(userId),
@@ -857,6 +862,7 @@ async function joinHuddle(
         [...runtimes.values()].filter((other) => other.coordinator?.videoMode)
           .length,
       jellyfin,
+      smart,
     ));
     coordinator.autoJoined = autoJoined;
     try {
@@ -1489,6 +1495,7 @@ const server = Bun.serve({
         token: config.mcpToken,
         actorId: config.mcpUserId ?? [...config.adminUserIds][0],
         version: "1",
+        smart,
         session(channel, threadTs) {
           const coordinator = [...runtimes.values()]
             .map((runtime) => runtime.coordinator)
