@@ -125,6 +125,30 @@ export const mcpTools = [
     },
     ["reference"],
   ),
+  tool(
+    "move",
+    "Move songs in the queue to a position, in the order given, as one block; ids come from status",
+    "move",
+    {
+      track_ids: {
+        type: "array",
+        items: { type: "string" },
+        minItems: 1,
+        description:
+          "Queue song ids from status, in the order they should play",
+      },
+      position: {
+        type: "integer",
+        minimum: 1,
+        description: "Queue position the first song lands on; 1 is next",
+      },
+      play_next: {
+        type: "boolean",
+        description: "Same as position 1",
+      },
+    },
+    ["track_ids"],
+  ),
   tool("skip", "Skip to the next song", "skip"),
   tool("previous", "Go back to the previous song", "previous"),
   tool("pause", "Pause playback", "pause"),
@@ -271,6 +295,12 @@ async function call(
   const requestedBy = slackUserId(args.requested_by);
   if (requestedBy) command.requestedBy = requestedBy;
   if (typeof args.percent === "number") command.percent = args.percent;
+  if (Array.isArray(args.track_ids))
+    command.trackIds = args.track_ids.filter(
+      (id: unknown): id is string => typeof id === "string" && id !== "",
+    );
+  if (typeof args.position === "number") command.position = args.position;
+  if (args.play_next === true) command.playNext = true;
   for (const [key, kind] of Object.entries(sessionSettings)) {
     const value =
       kind === "boolean"
