@@ -110,6 +110,8 @@ import {
   sectionBlocks,
   settingsMessageView,
   songCount,
+  queueLength,
+  roughLength,
   toggle,
   truncate,
   when,
@@ -7134,6 +7136,10 @@ export class Coordinator {
       close: plain("Close"),
       blocks: this.queue.length
         ? [
+            context(
+              "queue_total",
+              `${songCount(this.queue.length)}${queueLength(this.queue) ? ` · ${queueLength(this.queue)}` : ""}`,
+            ),
             ...when(
               (manages && this.shufflableCount() > 1) ||
                 this.can(userId, "clear") ||
@@ -7210,7 +7216,7 @@ export class Coordinator {
                 ),
                 {
                   ...section(
-                    `${index + 1}. *${escape(track.title)}* — ${escape(track.artist)}${track.live ? " · 🔴 LIVE" : ""}`,
+                    `${index + 1}. *${escape(track.title)}* — ${escape(track.artist)}${track.live ? " · 🔴 LIVE" : track.duration ? ` · ${formatClock(track.duration)}` : ""}`,
                     `queue_item_${track.id}`,
                   ),
                   ...(options.length
@@ -9239,7 +9245,12 @@ export class Coordinator {
           ),
           context(
             `volume_status_${id}`,
-            `${this.videoMode ? "Video mode · " : ""}Volume: ${Math.round(this.volume * 10_000) / 100}%${this.communism ? " · 👥 Everyone Is Host" : this.hostId ? ` · Host: <@${this.hostId}>` : " · No host"}${
+            `${this.videoMode ? "Video mode · " : ""}Volume: ${Math.round(this.volume * 10_000) / 100}%${
+              // How long this session has played, kept across restarts.
+              this.listenedSeconds + this.watchedSeconds >= 60
+                ? ` · Played ${roughLength(this.listenedSeconds + this.watchedSeconds)}`
+                : ""
+            }${this.communism ? " · 👥 Everyone Is Host" : this.hostId ? ` · Host: <@${this.hostId}>` : " · No host"}${
               this.integrations.size
                 ? ` · Controlling: ${[...this.integrations.keys()].map((id) => `<@${id}>`).join(", ")}`
                 : ""
@@ -9272,7 +9283,9 @@ export class Coordinator {
         child_blocks: [
           context(
             `queue_status_${id}`,
-            `${next ? `${addedBy(next)} · ` : ""}${songCount(this.queue.length)} in queue`,
+            `${next ? `${addedBy(next)} · ` : ""}${songCount(this.queue.length)} in queue${
+              queueLength(this.queue) ? ` · ${queueLength(this.queue)}` : ""
+            }`,
           ),
           actions(`add_${id}`, [
             button("open_add_to_queue", plain("Add to queue"), { value }),

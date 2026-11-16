@@ -309,6 +309,26 @@ export function elapsed(seconds: number) {
     .join(" ");
 }
 
+/** "3h 42m", "12m", "40s": a running total, to the minute once past one. */
+export function roughLength(seconds: number) {
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  return [hours && `${hours}h`, minutes && `${minutes}m`]
+    .filter(Boolean)
+    .join(" ");
+}
+
+/** How long songs run, from those whose length is known; "+" when some are
+ * not (live streams), and nothing when none are. */
+export function queueLength(tracks: readonly { duration?: number }[]) {
+  const known = tracks.filter((track) => (track.duration ?? 0) > 0);
+  if (!known.length) return "";
+  const seconds = known.reduce((sum, track) => sum + track.duration!, 0);
+  return `${roughLength(seconds)}${known.length < tracks.length ? "+" : ""}`;
+}
+
 export function songCount(count: number) {
   return `${count} ${count === 1 ? "song" : "songs"}`;
 }

@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
   icon,
+  queueLength,
+  roughLength,
   trackSource,
   useStandardEmoji,
   withEmoji,
@@ -65,4 +67,18 @@ test("credits an agent's song for nobody as a recommendation", () => {
   expect(addedBy({ requesterId: "U01TESTUSER" })).toBe(
     "Added by <@U01TESTUSER>",
   );
+});
+
+test("rounds a running total to the minute once past one", () => {
+  expect(roughLength(40)).toBe("40s");
+  expect(roughLength(12 * 60 + 29)).toBe("12m");
+  expect(roughLength(3 * 3600 + 42 * 60)).toBe("3h 42m");
+  expect(roughLength(2 * 3600)).toBe("2h");
+});
+
+test("adds up a queue's known lengths, marking unknown ones", () => {
+  expect(queueLength([])).toBe("");
+  expect(queueLength([{}])).toBe("");
+  expect(queueLength([{ duration: 240 }, { duration: 300 }])).toBe("9m");
+  expect(queueLength([{ duration: 240 }, {}])).toBe("4m+");
 });
