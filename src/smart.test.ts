@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import {
   SmartRecs,
+  cleanSong,
   profileFromTags,
   runScoringScript,
   separation,
@@ -537,4 +538,81 @@ test("imports past outcomes from the audit log once, and counts likes", () => {
   expect(taste.genres.jazz).toBe(1);
   expect(taste.artists.band).toBe(2);
   expect(smart.taste("UBOB").artists.other).toBe(-1);
+});
+
+test("reads the song out of messy video titles", () => {
+  expect(cleanSong("Band A - Songbird (Offiical Video)", "Band A")).toEqual({
+    title: "Songbird",
+    artist: "Band A",
+  });
+  expect(
+    cleanSong("Band A - Band A - Songbird [Official Music Video]", "Band A"),
+  ).toEqual({
+    title: "Songbird",
+    artist: "Band A",
+  });
+  expect(
+    cleanSong(
+      "Singer B - River Flows (Lirik) | Live 2019",
+      "SINGER B place / official",
+    ),
+  ).toEqual({
+    title: "River Flows",
+    artist: "Singer B",
+  });
+  expect(cleanSong("Night Drive (feat. Someone)", "Band C - Topic")).toEqual({
+    title: "Night Drive",
+    artist: "Band C",
+  });
+  // A dash that is part of the song stays when the left side is not the artist.
+  expect(cleanSong("Rain - Remix", "Band D")).toEqual({
+    title: "Rain - Remix",
+    artist: "Band D",
+  });
+});
+
+test("a fixed vocabulary mapping fixes songs already profiled, from their stored tags", async () => {
+  const request = (async (url: string) =>
+    url.includes("track.getTopTags")
+      ? Response.json({
+          toptags: {
+            tag: [
+              { name: "smooth jazz", count: 9 },
+              { name: "instrumental", count: 8 },
+              { name: "saxophone", count: 5 },
+            ],
+          },
+        })
+      : Response.json({ error: 6 })) as unknown as typeof fetch;
+  const smart = new SmartRecs(
+    new Database(":memory:"),
+    { lastFmApiKey: "key" },
+    request,
+  );
+  smart.setVocabulary({
+    kind: "genre",
+    value: "classical",
+    keys: ["classical", "instrumental"],
+  });
+  const before = await smart.ensureProfile(
+    "Band A - Songbird (Official Video)",
+    "Band A",
+  );
+  expect(before).toMatchObject({
+    title: "Songbird",
+    artist: "Band A",
+    genres: ["jazz", "classical"],
+  });
+  // The same song under a cleaner title shares the profile.
+  expect(smart.profile("Songbird", "Band A")?.genres).toEqual([
+    "jazz",
+    "classical",
+  ]);
+  smart.setVocabulary({
+    kind: "genre",
+    value: "classical",
+    keys: ["classical"],
+    note: "sax is not classical",
+  });
+  expect(smart.profile("Songbird", "Band A")?.genres).toEqual(["jazz"]);
 });

@@ -30,6 +30,9 @@ export type SongProfile = {
   source: string;
   confidence: number;
   updatedAt: number;
+  // The Last.fm tags it was read from, so a vocabulary change can read them
+  // again without another lookup.
+  tags?: string[];
 };
 
 export type Outcome = "finished" | "skipped" | "removed";
@@ -55,7 +58,7 @@ const defaultGenreTags: [string, string[]][] = [
   ["folk", ["folk", "singer-songwriter"]],
   ["acoustic", ["acoustic", "unplugged"]],
   ["country", ["country", "americana"]],
-  ["classical", ["classical", "orchestral", "piano", "instrumental"]],
+  ["classical", ["classical", "orchestral", "baroque", "symphony"]],
   ["reggae", ["reggae", "ska", "dub"]],
   ["latin", ["latin", "reggaeton", "salsa"]],
   ["soundtrack", ["soundtrack", "ost", "score", "musical"]],
@@ -196,9 +199,54 @@ const normalize = (value: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-export function profileKey(title: string, artist: string) {
-  return `${normalize(artist)}\0${normalize(title)}`;
+// YouTube titles carry labels ("(Official Video)", "[Lirik]", "Offiical"),
+// repeat the artist ("Kenny G - Songbird" by "Kenny G") or come from a
+// channel rather than the artist ("YIRUMA place / official"). Profiles are
+// looked up and stored by the song itself, so all of these are one song.
+const labelPattern =
+  /\s*[([][^)\]]*(?:of+i+c+i*a+l|video|audio|lyrics?|lirik|\bmv\b|m\/v|\bhd\b|\b4k\b|visuali[sz]er|remaster(?:ed)?|full album)[^)\]]*[)\]]/gi;
+const creditPattern =
+  /\s*[([]\s*(?:feat|ft|featuring|with)\.?\s[^)\]]*[)\]]|\s+(?:feat|ft|featuring)\.?\s.*$/i;
+const channelPattern =
+  /\b(?:official|vevo|records|music|channel|entertainment|tv)\b|\s-\s*topic$|\//i;
+
+export function cleanSong(title: string, artist: string) {
+  let song = title
+    .replace(labelPattern, "")
+    .replace(/\s*\|.*$/, "")
+    .replace(creditPattern, "")
+    .trim();
+  let by = artist.replace(/\s*-\s*topic$/i, "").trim();
+  const parts = song.split(/\s+[-–—]\s+/);
+  if (parts.length >= 2) {
+    const [left, ...rest] = parts;
+    const leftKey = normalize(left!);
+    const byKey = normalize(by);
+    // "Artist - Song", by the artist or by a channel named after them.
+    if (
+      leftKey &&
+      (byKey.includes(leftKey) ||
+        leftKey.includes(byKey) ||
+        channelPattern.test(by))
+    ) {
+      by = left!.trim();
+      song = rest.join(" - ").trim();
+    }
+  }
+  // "Kenny G - Kenny G - Songbird" leaves "Kenny G - Songbird" once more.
+  const again = song.split(/\s+[-–—]\s+/);
+  if (again.length >= 2 && normalize(again[0]!) === normalize(by))
+    song = again.slice(1).join(" - ").trim();
+  return { title: song || title, artist: by || artist };
 }
+
+export function profileKey(title: string, artist: string) {
+  const song = cleanSong(title, artist);
+  return `${normalize(song.artist)}\0${normalize(song.title)}`;
+}
+
+const artistKey = (title: string, artist: string) =>
+  normalize(cleanSong(title, artist).artist);
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 // A key matches at the start of a word ("nostalg" in "nostalgic", not "ost"
@@ -517,6 +565,13 @@ export class SmartRecs {
         confidence REAL NOT NULL,
         updated_at INTEGER NOT NULL
       )`);
+    const profileColumns = (
+      this.db.query("PRAGMA table_info(song_profiles)").all() as {
+        name: string;
+      }[]
+    ).map((column) => column.name);
+    if (!profileColumns.includes("tags"))
+      this.db.run("ALTER TABLE song_profiles ADD COLUMN tags TEXT");
     this.db.run(`
       CREATE TABLE IF NOT EXISTS song_outcomes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -771,6 +826,34 @@ export class SmartRecs {
     return { ok: true as const, entry: original };
   }
 
+  // Reads every looked-up profile's stored tags again with the current
+  // vocabulary, so a fixed mapping fixes the songs already profiled.
+  // Profiles an agent wrote are its own and left alone.
+  private rederiveProfiles() {
+    const rows = this.db
+      .query(
+        "SELECT * FROM song_profiles WHERE source = 'lastfm' AND tags IS NOT NULL",
+      )
+      .all() as Record<string, any>[];
+    const vocabulary = this.vocabulary();
+    this.db.transaction(() => {
+      for (const row of rows) {
+        const current = rowProfile(row);
+        const fresh = profileFromTags(current.tags ?? [], vocabulary);
+        this.saveProfile({
+          ...current,
+          genres: fresh.genres,
+          moods: fresh.moods,
+          ...(fresh.energy ? { energy: fresh.energy } : {}),
+          ...(fresh.era ? { era: fresh.era } : {}),
+          ...(fresh.country
+            ? { country: fresh.country, language: fresh.language }
+            : {}),
+        });
+      }
+    })();
+  }
+
   vocabularyLog(limit = 30) {
     return (
       this.db
@@ -805,6 +888,7 @@ export class SmartRecs {
     by?: string,
   ) {
     this.vocabularyCache = undefined;
+    this.rederiveProfiles();
     const subject = (after ?? before)!;
     this.db
       .query(
@@ -861,20 +945,22 @@ export class SmartRecs {
   }
 
   private async lookupProfile(title: string, artist: string) {
-    const tags = await this.lastFmTags(title, artist);
+    const song = cleanSong(title, artist);
+    const tags = await this.lastFmTags(song.title, song.artist);
     const fromTags = profileFromTags(tags, this.vocabulary());
-    const country = fromTags.country ?? (await this.artistCountry(artist));
+    const country = fromTags.country ?? (await this.artistCountry(song.artist));
     const hasAnything =
       fromTags.genres.length || fromTags.moods.length || country;
     if (!hasAnything) return undefined;
     return {
-      title,
-      artist,
+      title: song.title,
+      artist: song.artist,
       ...fromTags,
       ...(country ? { country } : {}),
       source: tags.length ? "lastfm" : "musicbrainz",
       confidence: tags.length >= 3 ? 0.7 : 0.4,
       updatedAt: this.now(),
+      ...(tags.length ? { tags: tags.slice(0, 15) } : {}),
     } satisfies SongProfile;
   }
 
@@ -1000,15 +1086,15 @@ export class SmartRecs {
       .query(
         `INSERT INTO song_profiles
           (key, title, artist, country, language, genres, moods, energy, era,
-           source, confidence, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           source, confidence, updated_at, tags)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET
            title = excluded.title, artist = excluded.artist,
            country = excluded.country, language = excluded.language,
            genres = excluded.genres, moods = excluded.moods,
            energy = excluded.energy, era = excluded.era,
            source = excluded.source, confidence = excluded.confidence,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at, tags = excluded.tags`,
       )
       .run(
         profileKey(profile.title, profile.artist),
@@ -1023,6 +1109,7 @@ export class SmartRecs {
         profile.source,
         profile.confidence,
         profile.updatedAt,
+        profile.tags ? JSON.stringify(profile.tags) : null,
       );
   }
 
@@ -1078,7 +1165,7 @@ export class SmartRecs {
         weight = row.added_by === userId ? 1 : 0.3;
       if (!weight) continue;
       taste.evidence++;
-      const artist = normalize(String(row.artist));
+      const artist = artistKey(String(row.title), String(row.artist));
       taste.artists[artist] = (taste.artists[artist] ?? 0) + weight;
       const profile = this.profile(String(row.title), String(row.artist));
       if (!profile) continue;
@@ -1104,7 +1191,7 @@ export class SmartRecs {
       : [];
     for (const like of likes) {
       taste.evidence++;
-      const artist = normalize(like.artist);
+      const artist = artistKey(like.title, like.artist);
       taste.artists[artist] = (taste.artists[artist] ?? 0) + 1;
       const profile = this.profile(like.title, like.artist);
       if (!profile) continue;
@@ -1200,7 +1287,7 @@ export class SmartRecs {
     const present = listeners
       .map((id) => tastes.get(id))
       .filter(Boolean) as Taste[];
-    const artist = normalize(song.artist);
+    const artist = artistKey(song.title, song.artist);
     const genreMatch = present.length
       ? present.reduce(
           (sum, taste) =>
@@ -2089,6 +2176,7 @@ function rowProfile(row: Record<string, any>): SongProfile {
     source: row.source,
     confidence: row.confidence,
     updatedAt: row.updated_at,
+    ...(row.tags ? { tags: JSON.parse(row.tags) } : {}),
   };
 }
 
