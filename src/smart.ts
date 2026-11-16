@@ -577,6 +577,11 @@ export class SmartRecs {
         );
     })();
     this.db.run(`
+      CREATE TABLE IF NOT EXISTS smart_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )`);
+    this.db.run(`
       CREATE TABLE IF NOT EXISTS rec_strategies (
         version INTEGER PRIMARY KEY,
         weights TEXT NOT NULL,
@@ -1045,8 +1050,46 @@ export class SmartRecs {
         energyWeight += weight;
       }
     }
+    // A like is a plain "more of this", from the player's like button.
+    const likes = this.hasTable("track_likes")
+      ? (this.db
+          .query(
+            "SELECT title, artist FROM track_likes WHERE user_id = ? LIMIT 200",
+          )
+          .all(userId) as { title: string; artist: string }[])
+      : [];
+    for (const like of likes) {
+      taste.evidence++;
+      const artist = normalize(like.artist);
+      taste.artists[artist] = (taste.artists[artist] ?? 0) + 1;
+      const profile = this.profile(like.title, like.artist);
+      if (!profile) continue;
+      for (const genre of profile.genres)
+        taste.genres[genre] = (taste.genres[genre] ?? 0) + 1;
+      for (const mood of profile.moods)
+        taste.moods[mood] = (taste.moods[mood] ?? 0) + 1;
+      if (profile.country)
+        taste.countries[profile.country] =
+          (taste.countries[profile.country] ?? 0) + 1;
+    }
     if (energyWeight) taste.energy = energySum / energyWeight;
     return taste;
+  }
+
+  private tables = new Map<string, boolean>();
+  private hasTable(name: string) {
+    if (!this.tables.has(name))
+      this.tables.set(
+        name,
+        Boolean(
+          this.db
+            .query(
+              "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .get(name),
+        ),
+      );
+    return this.tables.get(name)!;
   }
 
   /** The mood of the latest songs: top genres, moods and average energy. */
@@ -1169,6 +1212,141 @@ export class SmartRecs {
       lastRequester,
       rejected,
     };
+  }
+
+  // History -----------------------------------------------------------------
+
+  /**
+   * Turns the audit log HuddleFM has always kept into outcomes, once, so
+   * taste starts from everything played before smart recommendations
+   * existed rather than from nothing. Listeners come from `participants`.
+   */
+  importAudit(contents: string, participants: (sessionId: string) => string[]) {
+    const done = this.db
+      .query("SELECT value FROM smart_meta WHERE key = 'audit_imported'")
+      .get() as { value: string } | null;
+    if (done) return { imported: 0, skipped: true };
+    const added = new Map<string, number>();
+    const listeners = new Map<string, string[]>();
+    const insert = this.db.query(
+      `INSERT INTO song_outcomes
+        (session_id, at, title, artist, added_by, actor, outcome,
+         played_seconds, queued_seconds, listeners, features, context,
+         strategy_version)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 0)`,
+    );
+    const neutral = JSON.stringify({
+      base: 0.5,
+      shared: 0,
+      genreMatch: 0,
+      moodMatch: 0,
+      energyJump: 0,
+      lastRequester: 0,
+      rejected: 0,
+    });
+    let imported = 0;
+    this.db.transaction(() => {
+      for (const line of contents.split("\n")) {
+        if (!line.trim()) continue;
+        let event: Record<string, any>;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const at = Date.parse(String(event.time ?? ""));
+        if (!Number.isFinite(at) || !event.title || !event.artist) continue;
+        if (
+          event.event === "track.added" ||
+          event.event === "track.autoplay_added"
+        ) {
+          if (event.trackId) added.set(String(event.trackId), at);
+          continue;
+        }
+        const outcome =
+          event.event === "track.finished"
+            ? "finished"
+            : event.event === "track.skipped"
+              ? "skipped"
+              : event.event === "track.removed"
+                ? "removed"
+                : undefined;
+        if (!outcome) continue;
+        const actor =
+          event.actor?.id && event.actor.id !== "system"
+            ? String(event.actor.id)
+            : undefined;
+        if (outcome !== "finished" && !actor) continue;
+        const sessionId = String(event.sessionId ?? "");
+        if (!listeners.has(sessionId))
+          listeners.set(sessionId, sessionId ? participants(sessionId) : []);
+        const addedBy =
+          event.requesterId === "recommended"
+            ? "agent"
+            : event.origin === "autoplay"
+              ? "autoplay"
+              : String(event.requesterId ?? "unknown");
+        const queuedAt = event.trackId
+          ? added.get(String(event.trackId))
+          : undefined;
+        insert.run(
+          sessionId,
+          at,
+          String(event.title),
+          String(event.artist),
+          addedBy,
+          outcome === "finished" ? null : (actor ?? null),
+          outcome,
+          typeof event.playedSeconds === "number" ? event.playedSeconds : null,
+          outcome === "removed" && queuedAt !== undefined
+            ? Math.max(0, Math.round((at - queuedAt) / 1000))
+            : null,
+          JSON.stringify(listeners.get(sessionId)),
+          neutral,
+        );
+        imported++;
+      }
+      this.db
+        .query(
+          "INSERT INTO smart_meta (key, value) VALUES ('audit_imported', ?)",
+        )
+        .run(String(this.now()));
+    })();
+    log.info({ event: "audit_imported", imported }, "Imported past outcomes");
+    return { imported, skipped: false };
+  }
+
+  /**
+   * Looks up profiles for songs that have outcomes but no profile, one at a
+   * time and slowly (MusicBrainz allows one request a second), most played
+   * first. Stops when every song has been tried or `stop` says so.
+   */
+  async backfillProfiles(
+    options: { delayMs?: number; limit?: number; stop?: () => boolean } = {},
+  ) {
+    if (!this.config.lastFmApiKey) return 0;
+    const songs = this.db
+      .query(
+        `SELECT o.title, o.artist, COUNT(*) AS plays FROM song_outcomes o
+          LEFT JOIN song_profiles p
+            ON p.key = lower(o.artist) || char(0) || lower(o.title)
+          WHERE p.key IS NULL
+          GROUP BY lower(o.artist), lower(o.title)
+          ORDER BY plays DESC LIMIT ?`,
+      )
+      .all(options.limit ?? 2000) as { title: string; artist: string }[];
+    let filled = 0;
+    for (const song of songs) {
+      if (options.stop?.()) break;
+      if (this.profile(song.title, song.artist)) continue;
+      if (await this.ensureProfile(song.title, song.artist)) filled++;
+      await Bun.sleep(options.delayMs ?? 1500);
+    }
+    log.info(
+      { event: "profiles_backfilled", tried: songs.length, filled },
+      "Backfilled song profiles",
+    );
+    return filled;
   }
 
   // Outcomes ----------------------------------------------------------------
