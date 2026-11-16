@@ -1,5 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IntegrationCommand } from "./integration.ts";
+import { defaultWeights, type SmartRecs } from "./smart.ts";
+import { smartGuide } from "./smart-guide.ts";
 import {
   autoplayModes,
   displayModes,
@@ -28,6 +30,24 @@ export type McpHost = {
         ): Promise<{ ok: boolean; [key: string]: unknown }>;
       }
     | undefined;
+  // Song profiles, outcomes and ranking strategies, shared by all Huddles.
+  smart?: Pick<
+    SmartRecs,
+    | "profile"
+    | "setProfile"
+    | "activeStrategy"
+    | "trialStrategy"
+    | "strategies"
+    | "proposeStrategy"
+    | "evaluate"
+    | "rollback"
+    | "outcomes"
+    | "vocabulary"
+    | "setVocabulary"
+    | "deleteVocabulary"
+    | "resetVocabulary"
+    | "vocabularyLog"
+  >;
   // Brings HuddleFM into the active Huddle of a thread, hosted by userId.
   join(
     channel: string,
@@ -102,6 +122,32 @@ const sessionSettings = {
 
 export const mcpTools = [
   tool("status", "What is playing, the queue and settings", "status"),
+  tool(
+    "history",
+    "Who is listening and what became of recent songs: who added each, and whether it played out, was skipped or removed, by whom and how soon; check it before recommending",
+    "history",
+    {
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 100,
+        description: "How many recent events, newest last; default 30",
+      },
+    },
+  ),
+  tool(
+    "recommend",
+    "Songs to add next, ranked for who is listening: each pick with a reference for add, who it suits and why, plus each listener's likes and avoids, the mood, who asked last and which songs lack a genre or mood (fill them with profile_set). Pick from these, and add your own only after search.",
+    "recommend",
+    {
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 10,
+        description: "How many picks; default 5",
+      },
+    },
+  ),
   tool(
     "search",
     "Search songs; returns references to add",
@@ -194,6 +240,327 @@ export const mcpTools = [
   ),
 ];
 
+const weightProperties = Object.fromEntries(
+  Object.keys(defaultWeights).map((key) => [key, { type: "number" }]),
+);
+const songProperties = {
+  title: { type: "string" },
+  artist: { type: "string" },
+};
+
+// Tools about songs and strategies rather than one Huddle: no thread needed.
+// Genre and mood lists come from the vocabulary, so they grow with it.
+export const smartTools = (
+  vocabulary: ReturnType<NonNullable<McpHost["smart"]>["vocabulary"]>,
+) => [
+  {
+    name: "guide",
+    description:
+      "How to recommend well here: the loop (history, recommend, add, profile_set, outcomes), how to grow the vocabulary and tune the strategy. Read it once per session.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "vocabulary_get",
+    description:
+      "The genres, moods and places songs are described with, each with the tag words that map to it, plus recent changes",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "vocabulary_set",
+    description:
+      "Add or change a genre, mood or place (only the fields given change). Use it when songs keep arriving with a style the list lacks, or a tag maps wrongly",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["genre", "mood", "place"] },
+        value: {
+          type: "string",
+          description:
+            "Lowercase label (genre/mood) or ISO 3166 alpha-2 (place)",
+        },
+        keys: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Tag words that mean it, matched at the start of a word in Last.fm tags; replaces the list",
+        },
+        energy: { type: "integer", minimum: 1, maximum: 5 },
+        language: { type: "string", description: "Places: ISO 639-1" },
+        priority: {
+          type: "integer",
+          description:
+            "Lower is matched first; put specific entries (k-pop) before broad ones (pop)",
+        },
+        note: { type: "string", description: "Why, in a sentence" },
+      },
+      required: ["kind", "value"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "vocabulary_delete",
+    description:
+      "Remove a genre, mood or place; songs already profiled keep the label",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["genre", "mood", "place"] },
+        value: { type: "string" },
+        note: { type: "string" },
+      },
+      required: ["kind", "value"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "vocabulary_reset",
+    description: "Put a built-in genre, mood or place back as it shipped",
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["genre", "mood", "place"] },
+        value: { type: "string" },
+      },
+      required: ["kind", "value"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "profile_get",
+    description:
+      "A song's profile: country, language, genres, moods, energy, era",
+    inputSchema: {
+      type: "object",
+      properties: songProperties,
+      required: ["title", "artist"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "profile_set",
+    description:
+      "Fill in a song's profile when it has none or it is wrong; ranking uses it to match listeners and keep the mood",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...songProperties,
+        genres: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: vocabulary.genres.map((entry) => entry.value),
+          },
+          maxItems: 2,
+        },
+        moods: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: vocabulary.moods.map((entry) => entry.value),
+          },
+          maxItems: 2,
+        },
+        country: {
+          type: "string",
+          description: "Artist's country, ISO 3166 alpha-2 (ID, KR, US)",
+        },
+        language: {
+          type: "string",
+          description: "Lyrics language, ISO 639-1 (id, ko, en)",
+        },
+        energy: {
+          type: "integer",
+          minimum: 1,
+          maximum: 5,
+          description: "1 calm to 5 intense",
+        },
+        era: { type: "string", description: "Decade, e.g. 2000s" },
+      },
+      required: ["title", "artist"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "outcomes",
+    description:
+      "What became of past songs across sessions (played out, skipped, removed), to learn which picks work; added_by=agent for your own picks",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", minimum: 1, maximum: 200 },
+        added_by: {
+          type: "string",
+          description: "agent, autoplay or a Slack user ID",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "strategy_get",
+    description:
+      "The ranking strategy in use (weights and optional scoring script), any strategy on trial, and earlier versions",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "strategy_eval",
+    description:
+      "Replay past outcomes through changed weights and/or a script without using it: how often it ranks kept songs above removed or skipped ones (0.5 is chance), next to the active strategy",
+    inputSchema: {
+      type: "object",
+      properties: {
+        weights: { type: "object", properties: weightProperties },
+        script: {
+          type: "string",
+          description:
+            "JavaScript defining function score(song, ctx) returning a number (-5..5), added to the built-in score times weights.script. song: title, artist, forUsers, sources, discovery, profile, features; ctx: listeners, lastRequester, hour, mood. Runs sandboxed: no network, files or timers, 150ms.",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "strategy_set",
+    description:
+      "Propose changed weights and/or a scoring script (same as strategy_eval). It is checked on past outcomes, then tried on half your picks and takes over only if they are removed or skipped no more often; script null drops the script",
+    inputSchema: {
+      type: "object",
+      properties: {
+        weights: { type: "object", properties: weightProperties },
+        script: { type: ["string", "null"] },
+        note: { type: "string", description: "Why, in a sentence" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "strategy_rollback",
+    description:
+      "Put an earlier strategy version back in use; 0 is the built-in defaults, no version is the previous one",
+    inputSchema: {
+      type: "object",
+      properties: { version: { type: "integer", minimum: 0 } },
+      additionalProperties: false,
+    },
+  },
+];
+
+async function callSmart(
+  name: string,
+  args: Record<string, unknown>,
+  smart: NonNullable<McpHost["smart"]>,
+  by?: string,
+) {
+  const str = (value: unknown) => (typeof value === "string" ? value : "");
+  switch (name) {
+    case "guide":
+      return { content: [{ type: "text", text: smartGuide }] };
+    case "vocabulary_get": {
+      const vocabulary = smart.vocabulary();
+      const brief = (entries: typeof vocabulary.genres) =>
+        entries.map(({ origin: _origin, ...rest }) => rest);
+      return text({
+        ok: true,
+        genres: brief(vocabulary.genres),
+        moods: brief(vocabulary.moods),
+        places: brief(vocabulary.places),
+        recentChanges: smart.vocabularyLog(10),
+      });
+    }
+    case "vocabulary_set": {
+      const outcome = smart.setVocabulary(args, by);
+      return text(outcome, !outcome.ok);
+    }
+    case "vocabulary_delete": {
+      const outcome = smart.deleteVocabulary(
+        args.kind,
+        args.value,
+        typeof args.note === "string" ? args.note : undefined,
+        by,
+      );
+      return text(outcome, !outcome.ok);
+    }
+    case "vocabulary_reset": {
+      const outcome = smart.resetVocabulary(args.kind, args.value, by);
+      return text(outcome, !outcome.ok);
+    }
+    case "profile_get": {
+      const profile = smart.profile(str(args.title), str(args.artist));
+      return text(
+        profile
+          ? { ok: true, profile }
+          : { ok: false, error: "No profile yet" },
+        !profile,
+      );
+    }
+    case "profile_set": {
+      const outcome = smart.setProfile(args);
+      return text(outcome, !outcome.ok);
+    }
+    case "outcomes":
+      return text({
+        ok: true,
+        outcomes: smart.outcomes({
+          ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+          ...(typeof args.added_by === "string"
+            ? { addedBy: args.added_by }
+            : {}),
+        }),
+      });
+    case "strategy_get":
+      return text({
+        ok: true,
+        active: smart.activeStrategy(),
+        trial: smart.trialStrategy() ?? null,
+        history: smart.strategies().map(({ script: _script, ...rest }) => rest),
+        vocabulary: {
+          genres: smart.vocabulary().genres.map((entry) => entry.value),
+          moods: smart.vocabulary().moods.map((entry) => entry.value),
+        },
+      });
+    case "strategy_eval": {
+      const outcome = await smart.evaluate({
+        ...(args.weights && typeof args.weights === "object"
+          ? { weights: args.weights as Record<string, number> }
+          : {}),
+        ...(typeof args.script === "string" ? { script: args.script } : {}),
+      });
+      return text(outcome, !outcome.ok);
+    }
+    case "strategy_set": {
+      const outcome = await smart.proposeStrategy({
+        ...(args.weights && typeof args.weights === "object"
+          ? { weights: args.weights as Record<string, unknown> }
+          : {}),
+        ...(typeof args.script === "string" || args.script === null
+          ? { script: args.script as string | null }
+          : {}),
+        ...(typeof args.note === "string" ? { note: args.note } : {}),
+      });
+      return text(outcome, !outcome.ok);
+    }
+    case "strategy_rollback": {
+      const outcome = smart.rollback(
+        typeof args.version === "number" ? args.version : undefined,
+      );
+      return text(outcome, !outcome.ok);
+    }
+  }
+  return text({ error: "Unknown tool" }, true);
+}
+
 /** A Slack user ID from `U0ABC`, `<@U0ABC>`, `<@U0ABC|name>` or `u0abc`. */
 export function slackUserId(value: unknown) {
   if (typeof value !== "string") return undefined;
@@ -265,7 +632,11 @@ async function answer(rpc: Rpc, host: McpHost) {
       return result(rpc.id, {});
     case "tools/list":
       return result(rpc.id, {
-        tools: [joinTool, ...mcpTools.map(({ type: _type, ...rest }) => rest)],
+        tools: [
+          joinTool,
+          ...mcpTools.map(({ type: _type, ...rest }) => rest),
+          ...(host.smart ? smartTools(host.smart.vocabulary()) : []),
+        ],
       });
     case "tools/call":
       return result(rpc.id, await call(rpc.params ?? {}, host));
@@ -288,6 +659,13 @@ async function call(
     const outcome = await host.join(target, threadTs, user);
     return text(outcome, !outcome.ok);
   }
+  if (
+    host.smart &&
+    smartTools(host.smart.vocabulary()).some(
+      (item) => item.name === params.name,
+    )
+  )
+    return callSmart(params.name!, args, host.smart, host.actorId);
   const definition = mcpTools.find((item) => item.name === params.name);
   if (!definition) return text({ error: "Unknown tool" }, true);
   // Only the session of the Huddle thread the caller names.
@@ -311,6 +689,7 @@ async function call(
   const requestedBy = slackUserId(args.requested_by);
   if (requestedBy) command.requestedBy = requestedBy;
   if (typeof args.percent === "number") command.percent = args.percent;
+  if (typeof args.limit === "number") command.limit = args.limit;
   if (Array.isArray(args.track_ids))
     command.trackIds = args.track_ids.filter(
       (id: unknown): id is string => typeof id === "string" && id !== "",
