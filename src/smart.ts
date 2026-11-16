@@ -378,6 +378,8 @@ export type RankCandidate = {
 };
 
 const trialMinimum = 15;
+const tasteTtlMs = 5 * 60_000;
+const tasteWindowMs = 365 * 24 * 60 * 60_000;
 const trialMargin = 0.05;
 const scriptBudgetMs = 150;
 const scriptMemoryBytes = 16 * 1024 * 1024;
@@ -483,6 +485,10 @@ type Lookup = (
 export class SmartRecs {
   private inflight = new Map<string, Promise<SongProfile | undefined>>();
   private misses = new Map<string, number>();
+  private listenerInsert!: ReturnType<Database["query"]>;
+  // Taste per person, kept for a few minutes and dropped when an outcome or
+  // profile that could change it is stored.
+  private tastes = new Map<string, { taste: Taste; at: number }>();
   // Which strategy version recommended a song, so its outcome counts for it.
   private pickedBy = new Map<string, number>();
   private now: () => number;
@@ -530,6 +536,23 @@ export class SmartRecs {
       )`);
     this.db.run(
       "CREATE INDEX IF NOT EXISTS song_outcomes_at ON song_outcomes(at)",
+    );
+    this.db.run(
+      "CREATE INDEX IF NOT EXISTS song_outcomes_added_by ON song_outcomes(added_by, at)",
+    );
+    this.db.run(
+      "CREATE INDEX IF NOT EXISTS song_outcomes_actor ON song_outcomes(actor, at)",
+    );
+    // Who was listening, one row per person, so a person's outcomes are an
+    // index lookup rather than a scan of every row's listener list.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS song_outcome_listeners (
+        outcome_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        PRIMARY KEY (user_id, outcome_id)
+      ) WITHOUT ROWID`);
+    this.listenerInsert = this.db.query(
+      "INSERT OR IGNORE INTO song_outcome_listeners (outcome_id, user_id) VALUES (?, ?)",
     );
     this.db.run(`
       CREATE TABLE IF NOT EXISTS song_vocabulary (
@@ -972,6 +995,7 @@ export class SmartRecs {
   }
 
   private saveProfile(profile: SongProfile) {
+    this.tastes.clear();
     this.db
       .query(
         `INSERT INTO song_profiles
@@ -1010,14 +1034,34 @@ export class SmartRecs {
    * songs others added that played out while they listened count a little.
    */
   taste(userId: string): Taste {
+    const cached = this.tastes.get(userId);
+    if (cached && this.now() - cached.at < tasteTtlMs) return cached.taste;
+    const taste = this.computeTaste(userId);
+    this.tastes.set(userId, { taste, at: this.now() });
+    if (this.tastes.size > 500) {
+      const oldest = this.tastes.keys().next().value;
+      if (oldest !== undefined) this.tastes.delete(oldest);
+    }
+    return taste;
+  }
+
+  private computeTaste(userId: string): Taste {
+    // The latest 400 outcomes they added, acted on or heard, from the last
+    // year: enough to know someone, and bounded however long HuddleFM runs.
     const rows = this.db
       .query(
-        `SELECT title, artist, added_by, actor, outcome, listeners
-           FROM song_outcomes
-          WHERE added_by = ?1 OR actor = ?1 OR listeners LIKE ?2
+        `SELECT title, artist, added_by, actor, outcome FROM song_outcomes
+          WHERE id IN (
+            SELECT id FROM (SELECT id FROM song_outcomes
+              WHERE added_by = ?1 AND at >= ?2 ORDER BY at DESC LIMIT 400)
+            UNION SELECT id FROM (SELECT id FROM song_outcomes
+              WHERE actor = ?1 AND at >= ?2 ORDER BY at DESC LIMIT 400)
+            UNION SELECT outcome_id FROM (SELECT outcome_id FROM song_outcome_listeners
+              WHERE user_id = ?1 ORDER BY outcome_id DESC LIMIT 400)
+          ) AND at >= ?2
           ORDER BY at DESC LIMIT 400`,
       )
-      .all(userId, `%"${userId}"%`) as Record<string, any>[];
+      .all(userId, this.now() - tasteWindowMs) as Record<string, any>[];
     const taste: Taste = {
       genres: {},
       moods: {},
@@ -1216,6 +1260,20 @@ export class SmartRecs {
 
   // History -----------------------------------------------------------------
 
+  private noteListeners(outcomeId: number, listeners: string[]) {
+    for (const userId of new Set(listeners))
+      this.listenerInsert.run(outcomeId, userId);
+  }
+
+  /** Whether the audit log was already imported, to skip reading it. */
+  auditImported() {
+    return Boolean(
+      this.db
+        .query("SELECT 1 FROM smart_meta WHERE key = 'audit_imported'")
+        .get(),
+    );
+  }
+
   /**
    * Turns the audit log HuddleFM has always kept into outcomes, once, so
    * taste starts from everything played before smart recommendations
@@ -1289,7 +1347,7 @@ export class SmartRecs {
         const queuedAt = event.trackId
           ? added.get(String(event.trackId))
           : undefined;
-        insert.run(
+        const row = insert.run(
           sessionId,
           at,
           String(event.title),
@@ -1304,6 +1362,10 @@ export class SmartRecs {
           JSON.stringify(listeners.get(sessionId)),
           neutral,
         );
+        this.noteListeners(
+          Number(row.lastInsertRowid),
+          listeners.get(sessionId)!,
+        );
         imported++;
       }
       this.db
@@ -1312,6 +1374,7 @@ export class SmartRecs {
         )
         .run(String(this.now()));
     })();
+    this.tastes.clear();
     log.info({ event: "audit_imported", imported }, "Imported past outcomes");
     return { imported, skipped: false };
   }
@@ -1382,7 +1445,7 @@ export class SmartRecs {
       song.addedBy === "agent"
         ? (this.pickedBy.get(key) ?? strategy.version)
         : strategy.version;
-    this.db
+    const stored = this.db
       .query(
         `INSERT INTO song_outcomes
           (session_id, at, title, artist, added_by, actor, outcome,
@@ -1410,6 +1473,9 @@ export class SmartRecs {
         }),
         version,
       );
+    this.noteListeners(Number(stored.lastInsertRowid), context.listeners);
+    for (const id of [...context.listeners, song.addedBy, song.actor])
+      if (id) this.tastes.delete(id);
     if (song.addedBy === "agent") this.settleTrial();
   }
 

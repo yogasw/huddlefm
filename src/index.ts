@@ -169,15 +169,16 @@ const smart = new SmartRecs(store.db, {
      UNION SELECT user_id FROM track_plays WHERE session_id = ?1`,
   );
   try {
-    smart.importAudit(
-      await Bun.file("data/audit.jsonl")
-        .text()
-        .catch(() => ""),
-      (sessionId) =>
-        (participants.all(sessionId) as { user_id: string }[])
-          .map((row) => row.user_id)
-          .filter((id) => !config.excludedUserIds.has(id)),
-    );
+    if (!smart.auditImported())
+      smart.importAudit(
+        await Bun.file("data/audit.jsonl")
+          .text()
+          .catch(() => ""),
+        (sessionId) =>
+          (participants.all(sessionId) as { user_id: string }[])
+            .map((row) => row.user_id)
+            .filter((id) => !config.excludedUserIds.has(id)),
+      );
   } catch (error) {
     log.warn(
       { event: "audit_import_failed", err: error },
