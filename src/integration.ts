@@ -32,6 +32,7 @@ export const integrationEventLabels: Record<IntegrationEvent, string> = {
 export const integrationCommandTypes = [
   "request_control",
   "status",
+  "history",
   "search",
   "add",
   "remove",
@@ -64,6 +65,8 @@ export type IntegrationCommand = {
   permissions?: string[];
   events?: string[];
   query?: string;
+  // How many recent events history returns.
+  limit?: number;
   reference?: string;
   trackId?: string;
   // Several songs moved together, in this order, as one block.

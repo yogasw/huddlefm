@@ -250,6 +250,24 @@ type VideoRequest = {
   message?: Promise<{ channelId: string; ts: string } | undefined>;
 };
 
+// What happened to a song in this session, kept for agents choosing the next
+// ones: who added it, and whether it played out, was skipped or taken out.
+export type TimelineEvent = {
+  at: string;
+  event: string;
+  title: string;
+  artist: string;
+  // A person's Slack ID, "agent" for an agent's recommendation, or
+  // "autoplay".
+  addedBy: string;
+  actor?: string;
+  reason?: string;
+  playedSeconds?: number;
+  queuedSeconds?: number;
+};
+
+const timelineLimit = 100;
+
 type Entry = TrackMetadata & {
   // Why the song could not be prepared, for an agent that added it.
   preparationError?: string;
@@ -513,6 +531,8 @@ export class Coordinator {
   private contentShares = 0;
   // Slack users connected to the meeting on attendees other than HuddleFM's.
   private attendeeUsers = new Set<string>();
+  private timeline: TimelineEvent[] = [];
+  private queuedAt = new Map<string, number>();
   // Preparations of tracks already prepared, for the other mode.
   private reprepares = new Map<string, AbortController>();
   // The open request for video mode, in a message to the host.
@@ -4023,6 +4043,8 @@ export class Coordinator {
     switch (command.type) {
       case "status":
         return this.integrationStatus(userId);
+      case "history":
+        return this.integrationHistory(userId, command.limit);
       case "search":
         if (!command.query)
           return { ok: false as const, error: "query is required." };
@@ -4094,6 +4116,36 @@ export class Coordinator {
       default:
         return { ok: false as const, error: "unknown_type" };
     }
+  }
+
+  // Who is listening and what became of the latest songs, so an agent can
+  // see which of its picks were taken out before choosing more.
+  private integrationHistory(userId: string, limit = 30) {
+    if (!this.canUsePlayer(userId))
+      return {
+        ok: false as const,
+        error: "Join the huddle before using the player.",
+      };
+    const count = Math.max(1, Math.min(timelineLimit, Math.floor(limit)));
+    return {
+      ok: true as const,
+      listeners: this.listenerIds(),
+      ...(this.current
+        ? {
+            nowPlaying: {
+              title: this.current.title,
+              artist: this.current.artist,
+              addedBy:
+                this.current.requesterId === recommendedBy
+                  ? "agent"
+                  : this.current.automatic
+                    ? "autoplay"
+                    : this.current.requesterId,
+            },
+          }
+        : {}),
+      events: this.timeline.slice(-count),
+    };
   }
 
   // The agent status without the fields that only Slack-side agents need.
@@ -4312,11 +4364,67 @@ export class Coordinator {
     }
   }
 
+  private remember(
+    event: string,
+    entry: Entry,
+    extra: Record<string, unknown>,
+    actorId?: string,
+  ) {
+    const now = Date.now();
+    const item: TimelineEvent = {
+      at: new Date(now).toISOString(),
+      event,
+      title: entry.title,
+      artist: entry.artist,
+      addedBy:
+        entry.requesterId === recommendedBy
+          ? "agent"
+          : entry.automatic
+            ? "autoplay"
+            : entry.requesterId,
+      ...(actorId ? { actor: actorId } : {}),
+      ...(typeof extra.reason === "string" ? { reason: extra.reason } : {}),
+    };
+    if (event === "queue.added") this.queuedAt.set(entry.id, now);
+    if (event === "queue.removed") {
+      const queued = this.queuedAt.get(entry.id);
+      if (queued !== undefined)
+        item.queuedSeconds = Math.round((now - queued) / 1000);
+      this.queuedAt.delete(entry.id);
+    }
+    if (event === "track.started") this.queuedAt.delete(entry.id);
+    if (event === "track.skipped" || event === "track.finished")
+      item.playedSeconds = Math.round(this.playbackSeconds);
+    this.timeline.push(item);
+    if (this.timeline.length > timelineLimit)
+      this.timeline.splice(0, this.timeline.length - timelineLimit);
+    // Who took a song out, or skipped it, shows in the container logs too.
+    if (actorId && (event === "queue.removed" || event === "track.skipped"))
+      this.log.info(
+        {
+          event: event === "queue.removed" ? "track_removed" : "track_skipped",
+          userId: actorId,
+          title: entry.title,
+          artist: entry.artist,
+          addedBy: item.addedBy,
+          ...(item.queuedSeconds !== undefined
+            ? { queuedSeconds: item.queuedSeconds }
+            : {}),
+          ...(item.playedSeconds !== undefined
+            ? { playedSeconds: item.playedSeconds }
+            : {}),
+        },
+        event === "queue.removed" ? "Track removed" : "Track skipped",
+      );
+  }
+
   private notifyTrack(
     event: string,
     entry: Entry,
     extra: Record<string, unknown> = {},
+    actorId?: string,
   ) {
+    this.remember(event, entry, extra, actorId);
     this.notifyIntegrations(event, {
       id: entry.id,
       title: entry.title,
@@ -4916,7 +5024,7 @@ export class Coordinator {
         sessionId: this.id,
         ...auditTrack(entry),
       });
-      this.notifyTrack("queue.added", entry);
+      this.notifyTrack("queue.added", entry, {}, userId);
       return { entry, controller };
     });
   }
@@ -6358,7 +6466,7 @@ export class Coordinator {
       playedSeconds: Math.round(this.playbackSeconds),
       duration: skipped.duration,
     });
-    this.notifyTrack("track.skipped", skipped);
+    this.notifyTrack("track.skipped", skipped, {}, userId);
     this.store.incrementUsage("next");
     this.rejectSkipped(skipped, userId);
     await this.advance("skipped");
@@ -6567,7 +6675,7 @@ export class Coordinator {
       sessionId: this.id,
       ...auditTrack(entry),
     });
-    this.notifyTrack("queue.removed", entry);
+    this.notifyTrack("queue.removed", entry, {}, userId);
     this.store.incrementUsage("removed");
     this.queueChanged(interaction);
     await this.releaseMedia(entry);
@@ -6659,7 +6767,7 @@ export class Coordinator {
       ...auditTrack(entry),
       reason: "autoplay_kept",
     });
-    this.notifyTrack("queue.added", entry, { reason: "autoplay_kept" });
+    this.notifyTrack("queue.added", entry, { reason: "autoplay_kept" }, userId);
     this.store.incrementUsage("added");
     void this.recommendations?.refreshUser(userId);
     await this.render();

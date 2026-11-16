@@ -10260,3 +10260,65 @@ test("agent moves several queued songs as one block", async () => {
   expect(titles()).toBe("DBFCE");
   await result.coordinator.endFromSlack();
 });
+
+test("history tells an agent who took out its recommendation, and how soon", async () => {
+  const track = (input: string) => ({
+    sourceInput: input,
+    canonicalUrl: input,
+    sourceId: input.slice(-11),
+    title: input.split("/").at(-1)!,
+    artist: "Artist",
+  });
+  const test = setup({
+    resolve: async (input: string) => track(input),
+    resolveUrl: async (input: string) => track(input),
+    prepare: async () => "track.opus",
+  } as unknown as TrackCatalog);
+  await test.coordinator.start();
+  // Something plays, so the agent's songs wait in the queue.
+  Reflect.set(test.coordinator, "current", {
+    id: "now",
+    requesterId: "host",
+    sourceId: "now",
+    title: "Now",
+    artist: "Artist",
+    status: "ready",
+  });
+  await test.coordinator.mcpCommand("host", {
+    type: "add",
+    reference: "https://example.com/picked",
+  });
+  await test.coordinator.mcpCommand("host", {
+    type: "add",
+    reference: "https://example.com/asked",
+    requestedBy: "guest",
+  });
+  const queue = Reflect.get(test.coordinator, "queue") as {
+    id: string;
+    title: string;
+  }[];
+  const picked = queue.find((entry) => entry.title === "picked")!;
+  expect(await test.coordinator.agentRemove("host", picked.id)).toMatchObject({
+    ok: true,
+  });
+  const history = await test.coordinator.mcpCommand("host", {
+    type: "history",
+  });
+  expect(history).toMatchObject({
+    ok: true,
+    nowPlaying: { title: "Now", addedBy: "host" },
+  });
+  const events = (history as { events: Record<string, unknown>[] }).events;
+  expect(events.map((item) => [item.event, item.title, item.addedBy])).toEqual([
+    ["queue.added", "picked", "agent"],
+    ["queue.added", "asked", "guest"],
+    ["queue.removed", "picked", "agent"],
+  ]);
+  expect(events.at(-1)).toMatchObject({ actor: "host", queuedSeconds: 0 });
+  const limited = await test.coordinator.mcpCommand("host", {
+    type: "history",
+    limit: 1,
+  });
+  expect((limited as { events: unknown[] }).events).toHaveLength(1);
+  await test.coordinator.endFromSlack();
+});

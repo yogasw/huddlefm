@@ -215,3 +215,20 @@ test("shuffles and clears the queue", async () => {
   await call("clear", { channel: "C01ALLOWED", thread_ts: "1.0" });
   expect(ran.map(({ command }) => command.type)).toEqual(["shuffle", "clear"]);
 });
+
+test("passes how much history to return", async () => {
+  ran.length = 0;
+  expect(
+    await call("history", {
+      channel: "C01ALLOWED",
+      thread_ts: "1.0",
+      limit: 5,
+    }),
+  ).toEqual({ isError: false, value: { ok: true, type: "history" } });
+  expect(ran).toEqual([
+    {
+      userId: "U01TESTADMIN",
+      command: { type: "history", channel: "C01ALLOWED", limit: 5 },
+    },
+  ]);
+});

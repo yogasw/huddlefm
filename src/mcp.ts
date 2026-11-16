@@ -103,6 +103,19 @@ const sessionSettings = {
 export const mcpTools = [
   tool("status", "What is playing, the queue and settings", "status"),
   tool(
+    "history",
+    "Who is listening and what became of recent songs: who added each, and whether it played out, was skipped or removed, by whom and how soon; check it before recommending",
+    "history",
+    {
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 100,
+        description: "How many recent events, newest last; default 30",
+      },
+    },
+  ),
+  tool(
     "search",
     "Search songs; returns references to add",
     "search",
@@ -311,6 +324,7 @@ async function call(
   const requestedBy = slackUserId(args.requested_by);
   if (requestedBy) command.requestedBy = requestedBy;
   if (typeof args.percent === "number") command.percent = args.percent;
+  if (typeof args.limit === "number") command.limit = args.limit;
   if (Array.isArray(args.track_ids))
     command.trackIds = args.track_ids.filter(
       (id: unknown): id is string => typeof id === "string" && id !== "",
