@@ -616,3 +616,56 @@ test("a fixed vocabulary mapping fixes songs already profiled, from their stored
   });
   expect(smart.profile("Songbird", "Band A")?.genres).toEqual(["jazz"]);
 });
+
+test("imported outcomes are replayed with what was known that day, so evaluation can tell", async () => {
+  const smart = new SmartRecs(new Database(":memory:"), {}, offline);
+  smart.setProfile({ title: "Loud", artist: "Metal Band", genres: ["metal"] });
+  smart.setProfile({ title: "Soft", artist: "Pop Band", genres: ["pop"] });
+  const events: string[] = [];
+  for (let day = 1; day <= 6; day++) {
+    const time = (minute: number) =>
+      `2026-11-0${day}T10:${String(minute).padStart(2, "0")}:00.000Z`;
+    const base = {
+      sessionId: `s${day}`,
+      requesterId: "recommended",
+      origin: "manual",
+    };
+    events.push(
+      JSON.stringify({
+        ...base,
+        time: time(0),
+        event: "track.added",
+        actor: { id: "U01MCP" },
+        trackId: `l${day}`,
+        title: "Loud",
+        artist: "Metal Band",
+      }),
+      JSON.stringify({
+        ...base,
+        time: time(1),
+        event: "track.removed",
+        actor: { id: "UBOB" },
+        trackId: `l${day}`,
+        title: "Loud",
+        artist: "Metal Band",
+      }),
+      JSON.stringify({
+        ...base,
+        time: time(5),
+        event: "track.finished",
+        actor: { id: "system" },
+        trackId: `p${day}`,
+        title: "Soft",
+        artist: "Pop Band",
+      }),
+    );
+  }
+  smart.importAudit(events.join("\n"), () => ["UBOB"]);
+  const evaluation = await smart.evaluate({});
+  expect(evaluation).toMatchObject({
+    ok: true,
+    summary: { outcomes: 12, rejected: 6 },
+  });
+  // Day one knows nothing yet; from day two the removals weigh metal down.
+  expect((evaluation as any).summary.separation).toBeGreaterThan(0.75);
+});

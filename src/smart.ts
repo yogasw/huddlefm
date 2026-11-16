@@ -1132,23 +1132,29 @@ export class SmartRecs {
     return taste;
   }
 
-  private computeTaste(userId: string): Taste {
+  // `before` limits it to what was known then, for replaying the past
+  // without the outcome being judged leaking into the taste that judges it.
+  private computeTaste(userId: string, before?: number): Taste {
     // The latest 400 outcomes they added, acted on or heard, from the last
     // year: enough to know someone, and bounded however long HuddleFM runs.
+    const until = before ?? Number.MAX_SAFE_INTEGER;
+    const since = (before ?? this.now()) - tasteWindowMs;
     const rows = this.db
       .query(
         `SELECT title, artist, added_by, actor, outcome FROM song_outcomes
           WHERE id IN (
             SELECT id FROM (SELECT id FROM song_outcomes
-              WHERE added_by = ?1 AND at >= ?2 ORDER BY at DESC LIMIT 400)
+              WHERE added_by = ?1 AND at >= ?2 AND at < ?3 ORDER BY at DESC LIMIT 400)
             UNION SELECT id FROM (SELECT id FROM song_outcomes
-              WHERE actor = ?1 AND at >= ?2 ORDER BY at DESC LIMIT 400)
-            UNION SELECT outcome_id FROM (SELECT outcome_id FROM song_outcome_listeners
-              WHERE user_id = ?1 ORDER BY outcome_id DESC LIMIT 400)
-          ) AND at >= ?2
+              WHERE actor = ?1 AND at >= ?2 AND at < ?3 ORDER BY at DESC LIMIT 400)
+            UNION SELECT outcome_id FROM (SELECT l.outcome_id FROM song_outcome_listeners l
+              JOIN song_outcomes o ON o.id = l.outcome_id
+              WHERE l.user_id = ?1 AND o.at >= ?2 AND o.at < ?3
+              ORDER BY l.outcome_id DESC LIMIT 400)
+          )
           ORDER BY at DESC LIMIT 400`,
       )
-      .all(userId, this.now() - tasteWindowMs) as Record<string, any>[];
+      .all(userId, since, until) as Record<string, any>[];
     const taste: Taste = {
       genres: {},
       moods: {},
@@ -1182,13 +1188,14 @@ export class SmartRecs {
       }
     }
     // A like is a plain "more of this", from the player's like button.
-    const likes = this.hasTable("track_likes")
-      ? (this.db
-          .query(
-            "SELECT title, artist FROM track_likes WHERE user_id = ? LIMIT 200",
-          )
-          .all(userId) as { title: string; artist: string }[])
-      : [];
+    const likes =
+      before === undefined && this.hasTable("track_likes")
+        ? (this.db
+            .query(
+              "SELECT title, artist FROM track_likes WHERE user_id = ? LIMIT 200",
+            )
+            .all(userId) as { title: string; artist: string }[])
+        : [];
     for (const like of likes) {
       taste.evidence++;
       const artist = artistKey(like.title, like.artist);
@@ -1728,6 +1735,77 @@ export class SmartRecs {
   }
 
   /**
+   * Features and script input for past outcomes. Outcomes recorded live keep
+   * what was known when they happened; imported ones had nothing stored, so
+   * they are rebuilt from the profiles known now and each listener's taste
+   * as of the start of that day, with the session's earlier songs as mood.
+   */
+  private replay(all: Record<string, any>[], rows: Record<string, any>[]) {
+    const day = 24 * 60 * 60_000;
+    const tastes = new Map<string, Taste>();
+    const tasteAt = (userId: string, at: number) => {
+      const start = Math.floor(at / day) * day;
+      const key = `${userId}\0${start}`;
+      if (!tastes.has(key)) tastes.set(key, this.computeTaste(userId, start));
+      return tastes.get(key)!;
+    };
+    const earlier = new Map<string, { title: string; artist: string }[]>();
+    const recentOf = new Map<number, { title: string; artist: string }[]>();
+    for (const row of [...all].sort((a, b) => a.at - b.at)) {
+      const list = earlier.get(row.session_id) ?? [];
+      recentOf.set(row.id, list.slice(-8));
+      list.push({ title: row.title, artist: row.artist });
+      earlier.set(row.session_id, list);
+    }
+    return rows.map((row) => {
+      const context = JSON.parse(row.context || "{}") as Record<string, any>;
+      const listeners = JSON.parse(row.listeners) as string[];
+      const hour = context.hour ?? new Date(Number(row.at)).getHours();
+      const forUsers = String(row.added_by).startsWith("U")
+        ? [row.added_by]
+        : [];
+      let features = JSON.parse(row.features) as Features;
+      let mood = context.mood;
+      if (!context.mood) {
+        const recent = recentOf.get(row.id) ?? [];
+        mood = this.sessionMood(recent);
+        const replayTastes = new Map(
+          listeners.map((id) => [id, tasteAt(id, Number(row.at))] as const),
+        );
+        features = this.features(
+          { title: row.title, artist: row.artist, forUsers },
+          { sessionId: row.session_id, listeners, recent, hour },
+          replayTastes,
+          mood,
+          this.activeStrategy().weights,
+        );
+        features.base = 0.5;
+      }
+      return {
+        features,
+        input: {
+          song: {
+            title: row.title,
+            artist: row.artist,
+            forUsers,
+            sources: [],
+            discovery: false,
+            profile:
+              context.profile ?? this.profile(row.title, row.artist) ?? null,
+            features,
+          },
+          ctx: {
+            listeners,
+            lastRequester: context.lastRequester ?? null,
+            hour,
+            mood: mood ?? { genres: [], moods: [], countries: [] },
+          },
+        },
+      };
+    });
+  }
+
+  /**
    * Replays stored outcomes through a strategy: how often it scores songs
    * people kept above songs they removed or skipped (0.5 is chance), next to
    * the active strategy's figure.
@@ -1743,17 +1821,21 @@ export class SmartRecs {
       ...this.activeStrategy().weights,
       ...input.weights,
     };
+    const replayed = this.replay(
+      rows,
+      labelled.map(({ row }) => row),
+    );
     const scoreAll = async (strategy: {
       weights: Weights;
       script?: string;
     }) => {
-      const base = labelled.map(({ row }) =>
-        linearScore(JSON.parse(row.features) as Features, strategy.weights),
+      const base = replayed.map(({ features }) =>
+        linearScore(features, strategy.weights),
       );
       if (!strategy.script) return base;
       const extra = await runScoringScript(
         strategy.script,
-        labelled.map(({ row }) => scriptInput(row)),
+        replayed.map(({ input }) => input),
         Math.max(scriptBudgetMs, labelled.length * 2),
       );
       return base.map(
@@ -1775,9 +1857,7 @@ export class SmartRecs {
     }
     const active = this.activeStrategy();
     const current = await scoreAll(active).catch(() =>
-      labelled.map(({ row }) =>
-        linearScore(JSON.parse(row.features) as Features, active.weights),
-      ),
+      replayed.map(({ features }) => linearScore(features, active.weights)),
     );
     const split = (scores: number[]) =>
       separation(
@@ -2127,27 +2207,6 @@ function explain(features: Features, explore: boolean) {
   if (features.energyJump >= 0.5) reasons.push("big energy change");
   if (features.rejected >= 0.3) reasons.push("listeners removed similar songs");
   return reasons;
-}
-
-function scriptInput(row: Record<string, any>) {
-  const context = JSON.parse(row.context) as Record<string, any>;
-  return {
-    song: {
-      title: row.title,
-      artist: row.artist,
-      forUsers: String(row.added_by).startsWith("U") ? [row.added_by] : [],
-      sources: [],
-      discovery: false,
-      profile: context.profile ?? null,
-      features: JSON.parse(row.features),
-    },
-    ctx: {
-      listeners: JSON.parse(row.listeners),
-      lastRequester: context.lastRequester ?? null,
-      hour: context.hour ?? 12,
-      mood: context.mood ?? { genres: [], moods: [], countries: [] },
-    },
-  };
 }
 
 function rowVocabulary(row: Record<string, any>): VocabularyEntry {
