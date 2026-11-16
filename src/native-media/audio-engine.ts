@@ -1,6 +1,7 @@
 import {
   DuckingController,
   parseDuckingMode,
+  parseDuckTuning,
   type DuckDecision,
 } from "../ducking.ts";
 import { errorMessage } from "../error-message.ts";
@@ -197,6 +198,10 @@ export class AudioEngine {
     this.applyDuck(this.ducking.setMode(parseDuckingMode(mode), Date.now()));
   }
 
+  setDuckTuning(tuning: unknown) {
+    this.applyDuck(this.ducking.setTuning(parseDuckTuning(tuning), Date.now()));
+  }
+
   /** Lands the duck stage on a decision, holding wherever a ramp got to. */
   applyDuck = (decision: DuckDecision | undefined) => {
     if (!decision) return;
@@ -316,6 +321,9 @@ export class AudioEngine {
         return true;
       case "ducking_mode":
         this.setDuckingMode(message.mode);
+        return true;
+      case "ducking_tuning":
+        this.setDuckTuning(message.tuning);
         return true;
       case "transition_mode":
         this.transitionMode = message.mode;

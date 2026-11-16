@@ -906,6 +906,13 @@ test("the assistant's settings refuse the music settings in video mode", async (
       autoplayMode: "related",
     }),
   ).toEqual({ ok: false, error: "That’s paused in video mode." });
+  // Auto-duck still works in video mode, so the assistant can change it.
+  expect(
+    await result.coordinator.agentUpdateSettings("host", {
+      duckingMode: "strong",
+    }),
+  ).toMatchObject({ ok: true });
+  expect(result.media).toContainEqual({ type: "ducking_mode", mode: "strong" });
   expect(
     await result.coordinator.agentUpdateSettings("guest", { mode: "music" }),
   ).toMatchObject({ ok: false });

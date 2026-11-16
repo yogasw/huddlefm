@@ -53,7 +53,8 @@ import {
   parseIntegrationMessage,
 } from "./integration.ts";
 import { playWindowMs, skipWindowMs } from "./fatigue.ts";
-import { Store, type SavedSession } from "./store.ts";
+import { Store, everyChannel, type SavedSession } from "./store.ts";
+import { duckTuningOf } from "./ducking.ts";
 import { StreamRelay } from "./stream-relay.ts";
 import { forgetPreparedMedia, TrackCatalog } from "./tracks.ts";
 import { Jellyfin } from "./jellyfin.ts";
@@ -90,6 +91,9 @@ captureAnalytics("app.started", {
     trackDownloadLimitBytes: config.downloadBytes,
     initialVolume: config.initialVolume,
     duckingMode: config.duckingMode,
+    duckGentlePercent: config.duckGentlePercent,
+    duckStrongPercent: config.duckStrongPercent,
+    duckHoldMs: config.duckHoldMs,
     lyricsOffsetMs: config.lyricsOffsetMs,
     loudnessNormalization: config.loudnessNormalization,
     trackPreparationConcurrency: config.preparationConcurrency,
@@ -762,6 +766,8 @@ async function joinHuddle(
       attendee: joined.chimeAttendee,
       initialVolume: restored?.volume ?? config.initialVolume,
       duckingMode: restored?.duckingMode ?? config.duckingMode,
+      duckTuning: duckTuningOf(store.channelDefaults(everyChannel), config)
+        .tuning,
       lyricsOffsetMs: config.lyricsOffsetMs,
       bridgeToken: crypto.randomUUID(),
       video: {

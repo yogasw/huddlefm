@@ -155,6 +155,21 @@ export function loadConfig() {
     // Autoplay for a new session until a channel's defaults say otherwise.
     autoplay: autoplayModes.find((mode) => mode === process.env.AUTOPLAY),
     duckingMode: parseDuckingMode(process.env.DUCKING_MODE),
+    // How loud the music stays under talk in each auto-duck mode, and how
+    // long after the last word it comes back, until admins choose otherwise.
+    duckGentlePercent: parseWholeNumber(
+      process.env.DUCKING_GENTLE_PERCENT,
+      45,
+      0,
+      100,
+    ),
+    duckStrongPercent: parseWholeNumber(
+      process.env.DUCKING_STRONG_PERCENT,
+      15,
+      0,
+      100,
+    ),
+    duckHoldMs: parseWholeNumber(process.env.DUCKING_HOLD_MS, 1_000, 0, 60_000),
     lyricsOffsetMs: parseWholeNumber(
       process.env.LYRICS_OFFSET_MS,
       0,

@@ -12,6 +12,13 @@ export const duckLevels: Record<DuckingMode, number> = {
   strong: 0.15,
 };
 
+/**
+ * How far each mode pulls the music down (a gain, 0–1) and how long it holds
+ * after the last word before coming back. Admins tune it for every session;
+ * the levels above and the hold below are its defaults.
+ */
+export type DuckTuning = { gentle: number; strong: number; holdMs: number };
+
 /** Ducking used when nothing is stored for a session and no env var is set. */
 export const defaultDuckingMode: DuckingMode = "gentle";
 
@@ -27,6 +34,65 @@ export const duckReleaseSeconds = 0.7;
  * pump its way through a conversation.
  */
 export const duckHoldMs = 1_000;
+
+export const defaultDuckTuning: DuckTuning = {
+  gentle: duckLevels.gentle,
+  strong: duckLevels.strong,
+  holdMs: duckHoldMs,
+};
+
+/**
+ * The tuning a session plays with: what admins saved for every channel, in
+ * percent and milliseconds, over the configured defaults.
+ */
+export function duckTuningOf(
+  saved:
+    | {
+        duckGentlePercent?: number;
+        duckStrongPercent?: number;
+        duckHoldMs?: number;
+      }
+    | undefined,
+  fallback: {
+    duckGentlePercent?: number;
+    duckStrongPercent?: number;
+    duckHoldMs?: number;
+  },
+) {
+  const percents = {
+    gentle: saved?.duckGentlePercent ?? fallback.duckGentlePercent ?? 45,
+    strong: saved?.duckStrongPercent ?? fallback.duckStrongPercent ?? 15,
+    holdMs: saved?.duckHoldMs ?? fallback.duckHoldMs ?? duckHoldMs,
+  };
+  return {
+    percents,
+    tuning: {
+      gentle: percents.gentle / 100,
+      strong: percents.strong / 100,
+      holdMs: percents.holdMs,
+    } satisfies DuckTuning,
+  };
+}
+
+/** A tuning from anywhere, each field kept in range or left at its default. */
+export function parseDuckTuning(value: unknown): DuckTuning {
+  const given = (value ?? {}) as Record<string, unknown>;
+  const gain = (field: "gentle" | "strong") => {
+    const number = given[field];
+    return typeof number === "number" && number >= 0 && number <= 1
+      ? number
+      : defaultDuckTuning[field];
+  };
+  const hold = given.holdMs;
+  return {
+    gentle: gain("gentle"),
+    strong: gain("strong"),
+    holdMs:
+      typeof hold === "number" && hold >= 0 && hold <= 60_000
+        ? hold
+        : defaultDuckTuning.holdMs,
+  };
+}
 
 /** Chime volume indicator level an unmuted attendee counts as speech at. */
 export const speechVolumeThreshold = 0.05;
@@ -65,6 +131,7 @@ export class DuckingController {
   private speakers = new Set<string>();
   private releaseAt: number | undefined;
   private target = 1;
+  private tuning: DuckTuning = defaultDuckTuning;
 
   constructor(private mode: DuckingMode = "off") {}
 
@@ -81,6 +148,16 @@ export class DuckingController {
   setMode(mode: DuckingMode, now: number) {
     this.mode = mode;
     return this.decide(now);
+  }
+
+  /** New levels or hold, taken at once by a duck already in place. */
+  setTuning(tuning: DuckTuning, now: number) {
+    this.tuning = tuning;
+    return this.decide(now);
+  }
+
+  private level() {
+    return this.mode === "off" ? 1 : this.tuning[this.mode];
   }
 
   /** A volume indicator for one attendee. */
@@ -133,7 +210,7 @@ export class DuckingController {
   private decide(now: number): DuckDecision | undefined {
     const previousTarget = this.target;
     const previousRelease = this.releaseAt;
-    const level = duckLevels[this.mode];
+    const level = this.level();
     if (level >= 1) {
       // Ducking is off; nothing holds the music down.
       this.releaseAt = undefined;
@@ -142,7 +219,8 @@ export class DuckingController {
       this.releaseAt = undefined;
       this.target = level;
     } else if (previousTarget < 1) {
-      if (previousRelease === undefined) this.releaseAt = now + duckHoldMs;
+      if (previousRelease === undefined)
+        this.releaseAt = now + this.tuning.holdMs;
       else if (now >= previousRelease) this.releaseAt = undefined;
       this.target = this.releaseAt === undefined ? 1 : level;
     } else {

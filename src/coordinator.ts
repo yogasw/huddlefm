@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { capture as captureAnalytics } from "./analytics.ts";
 import type { AuditLog } from "./audit-log.ts";
 import { loadFatigue, skipBystanderShare } from "./fatigue.ts";
+import { duckTuningOf } from "./ducking.ts";
 import type { JoinedHuddle } from "./slack-huddle.ts";
 import {
   slackErrorCode,
@@ -21,6 +22,8 @@ import {
   permissionPresets,
   everyChannel,
   anchorQuietChoices,
+  duckHoldChoices,
+  duckPercentChoices,
   queueLowChoices,
   queueMessageSettings,
   peopleTemplates,
@@ -622,6 +625,9 @@ export class Coordinator {
       huddleAccountId?: string;
       queueEndMessage?: string;
       duckingMode: DuckingMode;
+      duckGentlePercent?: number;
+      duckStrongPercent?: number;
+      duckHoldMs?: number;
       aloneMs: number;
       // How long HuddleFM must stay alone before it warns. Presence briefly
       // drops while it restarts or reconnects, before everyone is seen again.
@@ -975,6 +981,18 @@ export class Coordinator {
     return this.videoMode ? "default" : this.displayMode;
   }
 
+  // Auto-duck's levels and hold: what admins chose for every channel, or the
+  // configured defaults.
+  private duckPercents() {
+    return duckTuningOf(this.store.channelDefaults(everyChannel), this.config)
+      .percents;
+  }
+
+  private duckTuning() {
+    return duckTuningOf(this.store.channelDefaults(everyChannel), this.config)
+      .tuning;
+  }
+
   private sendMediaSettings() {
     this.sendMedia({ type: "volume", value: this.volume });
     this.sendMedia({ type: "display_mode", mode: this.mediaDisplayMode() });
@@ -986,6 +1004,7 @@ export class Coordinator {
       type: "ducking_mode",
       mode: this.duckingMode,
     });
+    this.sendMedia({ type: "ducking_tuning", tuning: this.duckTuning() });
     this.sendMedia({ type: "captions", on: this.captions });
     this.sendMedia({ type: "progress_bar", on: this.progressBar });
     this.sendMedia({ type: "video_mode", on: this.videoMode });
@@ -2242,8 +2261,7 @@ export class Coordinator {
         patch.mode !== "music" &&
         (patch.displayMode !== undefined ||
           patch.autoplayMode !== undefined ||
-          patch.transitionMode !== undefined ||
-          patch.duckingMode !== undefined)
+          patch.transitionMode !== undefined)
       )
         return { ok: false as const, error: "That’s paused in video mode." };
       const before = this.settingsSnapshot();
@@ -7456,6 +7474,7 @@ export class Coordinator {
                 anchorQuietMinutes:
                   this.store.channelDefaults(everyChannel)
                     ?.anchorQuietMinutes ?? 0,
+                duck: this.duckPercents(),
                 everyoneHost:
                   this.store.channelDefaults(everyChannel)?.communism === true,
                 queueMessages: queueMessageSettings(
@@ -8393,14 +8412,35 @@ export class Coordinator {
       )
     )
       saved.anchorQuietMinutes = minutes;
+    else if (
+      (setting === "duckGentle" || setting === "duckStrong") &&
+      duckPercentChoices.includes(
+        minutes as (typeof duckPercentChoices)[number],
+      )
+    )
+      saved[
+        setting === "duckGentle" ? "duckGentlePercent" : "duckStrongPercent"
+      ] = minutes;
+    else if (
+      setting === "duckHold" &&
+      duckHoldChoices.includes(minutes as (typeof duckHoldChoices)[number])
+    )
+      saved.duckHoldMs = minutes;
     // Everyone as host is Everyone Is Host mode, from the session's start.
     else if (setting === "everyone") saved.communism = on;
     else return;
     this.store.setChannelDefaults(everyChannel, saved, interaction.userId);
     this.audit.record("every_channel.updated", interaction.userId, {
       setting,
-      ...(setting === "anchorQuiet" ? { minutes } : { on }),
+      ...(setting === "anchorQuiet"
+        ? { minutes }
+        : setting.startsWith("duck")
+          ? { value: minutes }
+          : { on }),
     });
+    // Auto-duck's levels reach this session's music at once.
+    if (setting.startsWith("duck"))
+      this.sendMedia({ type: "ducking_tuning", tuning: this.duckTuning() });
     // The session it was switched from takes it at once, as far as it can:
     // Everyone Is Host mode, once on, lasts until the session ends.
     if (setting === "anchor" && on !== this.anchorEnabled) {

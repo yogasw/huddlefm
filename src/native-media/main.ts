@@ -134,6 +134,7 @@ async function start(bootstrap: ChimeBootstrap) {
   engine = audio;
   audio.setVolume(bootstrap.initialVolume);
   audio.setDuckingMode(bootstrap.duckingMode);
+  if (bootstrap.duckTuning) audio.setDuckTuning(bootstrap.duckTuning);
   card = new VideoThread(
     (bootstrap.lyricsOffsetMs ?? 0) / 1_000,
     {

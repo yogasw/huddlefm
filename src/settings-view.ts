@@ -33,6 +33,8 @@ import {
 } from "./native-media/video-format.ts";
 import {
   anchorQuietChoices,
+  duckHoldChoices,
+  duckPercentChoices,
   huddleMixSources,
   queueLowChoices,
   queueStages,
@@ -929,6 +931,8 @@ export function youtubeStatus(
 type EveryChannelView = {
   anchor: boolean;
   anchorQuietMinutes: number;
+  // Auto-duck: the music's loudness under talk per mode, and the hold.
+  duck?: { gentle: number; strong: number; holdMs: number };
   everyoneHost: boolean;
   queueMessages: ReturnType<typeof queueMessageSettings>;
 };
@@ -996,6 +1000,75 @@ function anchorQuietLabel(minutes: number) {
   return minutes
     ? `After ${minutes} quiet minute${minutes === 1 ? "" : "s"}`
     : "Right away";
+}
+
+// A choice list that always holds the current value, which a deployment's
+// own default may have put between the usual steps.
+function withCurrent(choices: readonly number[], current: number) {
+  return [...new Set([...choices, current])].sort((a, b) => a - b);
+}
+
+function holdLabel(ms: number) {
+  return `${ms / 1_000} second${ms === 1_000 ? "" : "s"}`;
+}
+
+function duckBlocks(duck: NonNullable<EveryChannelView["duck"]>) {
+  const select = (
+    blockId: string,
+    text: string,
+    setting: string,
+    choices: number[],
+    current: number,
+    label: (value: number) => string,
+  ) => ({
+    type: "section",
+    block_id: blockId,
+    text: { type: "mrkdwn", text },
+    accessory: {
+      type: "static_select",
+      action_id: everyChannelAction,
+      options: choices.map((value) => ({
+        text: plain(label(value)),
+        value: `${setting}:${value}`,
+      })),
+      initial_option: {
+        text: plain(label(current)),
+        value: `${setting}:${current}`,
+      },
+    },
+  });
+  const percent = (value: number) => `${value}%`;
+  return [
+    { type: "header", text: plain("Auto-duck") },
+    select(
+      "every_channel_duck_gentle",
+      "*Gentle:* music while someone talks",
+      "duckGentle",
+      withCurrent(duckPercentChoices, duck.gentle),
+      duck.gentle,
+      percent,
+    ),
+    select(
+      "every_channel_duck_strong",
+      "*Strong:* music while someone talks",
+      "duckStrong",
+      withCurrent(duckPercentChoices, duck.strong),
+      duck.strong,
+      percent,
+    ),
+    select(
+      "every_channel_duck_hold",
+      "Music comes back after quiet",
+      "duckHold",
+      withCurrent(duckHoldChoices, duck.holdMs),
+      duck.holdMs,
+      holdLabel,
+    ),
+    context(
+      "every_channel_duck_hint",
+      "Percent of the session's volume left while someone speaks: lower keeps voices clear over the music. Applies to every session at once; each session still picks Off, Gentle or Strong in Settings.",
+    ),
+  ];
 }
 
 function everyChannelBlocks(every: EveryChannelView | undefined) {
@@ -1119,6 +1192,7 @@ function adminBlocks(options: SettingsViewOptions) {
       "Set by ADMIN_USER_IDS. Admins are hosts and channel managers everywhere.",
     ),
     ...everyChannelBlocks(bot.everyChannel),
+    ...(bot.everyChannel?.duck ? duckBlocks(bot.everyChannel.duck) : []),
     ...webhookBlocks(bot.webhook),
     { type: "header", text: plain("YouTube cookies") },
     {

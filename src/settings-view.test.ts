@@ -685,3 +685,36 @@ test("switches what every channel's new sessions start with", () => {
     "every_channel_queue_low",
   ]);
 });
+
+test("lets admins tune auto-duck for every session", () => {
+  const view = settingsView(
+    options({
+      tab: "admin",
+      access: { ...access, botAdmin: true },
+      bot: {
+        admins: [],
+        youtube: { signedIn: false, invalid: false },
+        everyChannel: {
+          anchor: false,
+          anchorQuietMinutes: 0,
+          everyoneHost: false,
+          duck: { gentle: 33, strong: 15, holdMs: 1_500 },
+          queueMessages: {
+            low: { enabled: false, mention: false, left: 2 },
+            last: { enabled: false, mention: false },
+            ended: { enabled: false, mention: false },
+          },
+        },
+      },
+    }),
+  );
+  const text = JSON.stringify(view.blocks);
+  // A deployment's own default between the steps is still offered.
+  expect(text).toContain(
+    '"initial_option":{"text":{"type":"plain_text","text":"33%"},"value":"duckGentle:33"}',
+  );
+  expect(text).toContain('"value":"duckStrong:15"');
+  expect(text).toContain(
+    '"initial_option":{"text":{"type":"plain_text","text":"1.5 seconds"},"value":"duckHold:1500"}',
+  );
+});
