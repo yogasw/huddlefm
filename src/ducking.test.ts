@@ -8,6 +8,7 @@ import {
   duckedGain,
   defaultDuckingMode,
   parseDuckingMode,
+  parseDuckTuning,
 } from "./ducking.ts";
 import { volumeGain } from "./volume.ts";
 
@@ -161,4 +162,20 @@ test("parses stored and configured modes", () => {
   expect(parseDuckingMode(undefined)).toBe(defaultDuckingMode);
   expect(parseDuckingMode("loud")).toBe(defaultDuckingMode);
   expect(parseDuckingMode(true)).toBe(defaultDuckingMode);
+});
+
+test("takes new levels and hold at once, and keeps a tuning in range", () => {
+  const ducking = new DuckingController("gentle");
+  ducking.volume("guest", 0.5, false, 0);
+  expect(ducking.gain).toBe(duckLevels.gentle);
+  expect(
+    ducking.setTuning({ gentle: 0.2, strong: 0.05, holdMs: 3_000 }, 10)?.gain,
+  ).toBe(0.2);
+  expect(ducking.volume("guest", 0, null, 20)?.recheckMs).toBe(3_000);
+  expect(ducking.tick(20 + 3_000)?.gain).toBe(1);
+  expect(parseDuckTuning({ gentle: 2, strong: 0.1, holdMs: -1 })).toEqual({
+    gentle: duckLevels.gentle,
+    strong: 0.1,
+    holdMs: duckHoldMs,
+  });
 });

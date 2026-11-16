@@ -90,6 +90,12 @@ export type ChannelDefaults = {
   displayMode?: DisplayMode;
   transitionMode?: TransitionMode;
   duckingMode?: DuckingMode;
+  // How loud the music stays under talk per auto-duck mode, in percent, and
+  // how long after the last word it comes back. Only the every-channel row
+  // uses them.
+  duckGentlePercent?: number;
+  duckStrongPercent?: number;
+  duckHoldMs?: number;
   anchorEnabled?: boolean;
   // Minutes the thread must stay quiet before the player moves down to its
   // bottom; unset or 0 moves it right away.
@@ -188,6 +194,14 @@ function parseQueueMessages(saved: unknown): QueueMessages | undefined {
 
 /** The quiet waits admins can pick before the player moves down. */
 export const anchorQuietChoices = [0, 1, 2, 5, 10] as const;
+// What admins pick from for auto-duck: the music's loudness under talk, and
+// how long after the last word it comes back.
+export const duckPercentChoices = [
+  5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80,
+] as const;
+export const duckHoldChoices = [
+  500, 1_000, 1_500, 2_000, 3_000, 5_000,
+] as const;
 
 // Keeps only the fields that still hold a valid value, so a row saved by an
 // older or newer version cannot put a session into an unknown state.
@@ -210,6 +224,21 @@ export function parseChannelDefaults(
   if (transitionMode) defaults.transitionMode = transitionMode;
   const duckingMode = modeOf(duckingModes, saved.duckingMode);
   if (duckingMode) defaults.duckingMode = duckingMode;
+  for (const field of ["duckGentlePercent", "duckStrongPercent"] as const) {
+    const value = saved[field];
+    if (
+      Number.isInteger(value) &&
+      (value as number) >= 0 &&
+      (value as number) <= 100
+    )
+      defaults[field] = value as number;
+  }
+  if (
+    Number.isInteger(saved.duckHoldMs) &&
+    (saved.duckHoldMs as number) >= 0 &&
+    (saved.duckHoldMs as number) <= 60_000
+  )
+    defaults.duckHoldMs = saved.duckHoldMs as number;
   if (typeof saved.anchorEnabled === "boolean")
     defaults.anchorEnabled = saved.anchorEnabled;
   if (

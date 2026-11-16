@@ -1,5 +1,6 @@
 import { logger } from "./logger.ts";
 import type { DuckingMode } from "./store.ts";
+import type { DuckTuning } from "./ducking.ts";
 
 const log = logger.child({ component: "slack-huddle" });
 
@@ -9,6 +10,8 @@ export type ChimeBootstrap = {
   attendee: Record<string, unknown>;
   initialVolume: number;
   duckingMode: DuckingMode;
+  /** Auto-duck's levels and hold the session starts with. */
+  duckTuning?: DuckTuning;
   /** How much later than the audio position the lyrics follow. */
   lyricsOffsetMs: number;
   bridgeToken: string;
