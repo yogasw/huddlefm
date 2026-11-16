@@ -232,3 +232,73 @@ test("passes how much history to return", async () => {
     },
   ]);
 });
+
+test("song and strategy tools work without a Huddle thread", async () => {
+  const { Database } = await import("bun:sqlite");
+  const { SmartRecs } = await import("./smart.ts");
+  const smart = new SmartRecs(new Database(":memory:"));
+  const ask = async (name: string, args: Record<string, unknown>) => {
+    const response = await mcpResponse(
+      post({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+      host({ smart }),
+    );
+    const { result } = (await response.json()) as {
+      result: { content: { text: string }[]; isError?: boolean };
+    };
+    return {
+      isError: !!result.isError,
+      value: JSON.parse(result.content[0]!.text),
+    };
+  };
+  const listed = await mcpResponse(
+    post({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    host({ smart }),
+  );
+  const names = (
+    (await listed.json()) as { result: { tools: { name: string }[] } }
+  ).result.tools.map((item) => item.name);
+  for (const name of [
+    "recommend",
+    "profile_set",
+    "strategy_set",
+    "strategy_eval",
+    "strategy_rollback",
+    "outcomes",
+  ])
+    expect(names).toContain(name);
+  expect(
+    (
+      await ask("profile_set", {
+        title: "Song",
+        artist: "Band",
+        genres: ["pop"],
+      })
+    ).isError,
+  ).toBe(false);
+  expect(
+    (await ask("profile_get", { title: "Song", artist: "Band" })).value,
+  ).toMatchObject({
+    ok: true,
+    profile: { genres: ["pop"] },
+  });
+  expect(
+    (await ask("strategy_set", { weights: { shared: 2 }, note: "more shared" }))
+      .value,
+  ).toMatchObject({
+    ok: true,
+    status: "trial",
+  });
+  expect((await ask("strategy_get", {})).value).toMatchObject({
+    active: { version: 0 },
+    trial: { version: 1 },
+  });
+  expect((await ask("strategy_rollback", { version: 1 })).value).toEqual({
+    ok: true,
+    active: 1,
+  });
+});
