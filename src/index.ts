@@ -161,6 +161,39 @@ const smart = new SmartRecs(store.db, {
   lastFmApiKey: config.lastFmApiKey,
   userAgent: "HuddleFM/1.0 (self-hosted Slack music bot)",
 });
+// Everything played before smart recommendations existed, from the audit log
+// HuddleFM always kept, once; then profiles for those songs, slowly.
+{
+  const participants = store.db.query(
+    `SELECT user_id FROM session_participants WHERE session_id = ?1
+     UNION SELECT user_id FROM track_plays WHERE session_id = ?1`,
+  );
+  try {
+    if (!smart.auditImported())
+      smart.importAudit(
+        await Bun.file("data/audit.jsonl")
+          .text()
+          .catch(() => ""),
+        (sessionId) =>
+          (participants.all(sessionId) as { user_id: string }[])
+            .map((row) => row.user_id)
+            .filter((id) => !config.excludedUserIds.has(id)),
+      );
+  } catch (error) {
+    log.warn(
+      { event: "audit_import_failed", err: error },
+      "Could not import past outcomes",
+    );
+  }
+  void smart
+    .backfillProfiles()
+    .catch((error) =>
+      log.warn(
+        { event: "profile_backfill_failed", err: error },
+        "Profile backfill failed",
+      ),
+    );
+}
 const slackApp = new SlackAppAdapter(config);
 const workspaceAdmins = new WorkspaceAdmins(
   (userId) => slackApp.workspaceAdmin(userId),

@@ -441,3 +441,100 @@ test("the vocabulary lives in the data and grows without a release", async () =>
     note: "keeps coming up",
   });
 });
+
+test("imports past outcomes from the audit log once, and counts likes", () => {
+  const db = new Database(":memory:");
+  db.run(
+    "CREATE TABLE track_likes (user_id TEXT, title TEXT, artist TEXT, liked_at INTEGER)",
+  );
+  db.run("INSERT INTO track_likes VALUES ('UALICE', 'Liked', 'Band', 1)");
+  const smart = new SmartRecs(db, {}, offline);
+  smart.setProfile({ title: "Liked", artist: "Band", genres: ["jazz"] });
+  const line = (event: Record<string, unknown>) => JSON.stringify(event);
+  const audit = [
+    line({
+      time: "2026-11-01T10:00:00.000Z",
+      event: "track.added",
+      actor: { id: "UALICE" },
+      sessionId: "old",
+      trackId: "t1",
+      title: "Mine",
+      artist: "Band",
+      requesterId: "UALICE",
+      origin: "manual",
+    }),
+    line({
+      time: "2026-11-01T10:04:00.000Z",
+      event: "track.finished",
+      actor: { id: "system" },
+      sessionId: "old",
+      trackId: "t1",
+      title: "Mine",
+      artist: "Band",
+      requesterId: "UALICE",
+      origin: "manual",
+    }),
+    line({
+      time: "2026-11-01T10:05:00.000Z",
+      event: "track.added",
+      actor: { id: "U01MCP" },
+      sessionId: "old",
+      trackId: "t2",
+      title: "Pick",
+      artist: "Other",
+      requesterId: "recommended",
+      origin: "manual",
+    }),
+    line({
+      time: "2026-11-01T10:05:30.000Z",
+      event: "track.removed",
+      actor: { id: "UBOB" },
+      sessionId: "old",
+      trackId: "t2",
+      title: "Pick",
+      artist: "Other",
+      requesterId: "recommended",
+      origin: "manual",
+    }),
+    line({
+      time: "2026-11-01T10:06:00.000Z",
+      event: "track.skipped",
+      actor: { id: "UBOB" },
+      sessionId: "old",
+      trackId: "t3",
+      title: "Auto",
+      artist: "Third",
+      requesterId: "UALICE",
+      origin: "autoplay",
+      playedSeconds: 12,
+    }),
+    "not json",
+  ].join("\n");
+  expect(smart.importAudit(audit, () => ["UALICE", "UBOB"])).toEqual({
+    imported: 3,
+    skipped: false,
+  });
+  expect(smart.importAudit(audit, () => [])).toEqual({
+    imported: 0,
+    skipped: true,
+  });
+  expect(
+    smart
+      .outcomes()
+      .map((item) => [
+        item.title,
+        item.outcome,
+        item.addedBy,
+        item.actor ?? null,
+        item.queuedSeconds ?? null,
+      ]),
+  ).toEqual([
+    ["Auto", "skipped", "autoplay", "UBOB", null],
+    ["Pick", "removed", "agent", "UBOB", 30],
+    ["Mine", "finished", "UALICE", null, null],
+  ]);
+  const taste = smart.taste("UALICE");
+  expect(taste.genres.jazz).toBe(1);
+  expect(taste.artists.band).toBe(2);
+  expect(smart.taste("UBOB").artists.other).toBe(-1);
+});
