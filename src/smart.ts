@@ -572,6 +572,26 @@ export class SmartRecs {
     ).map((column) => column.name);
     if (!profileColumns.includes("tags"))
       this.db.run("ALTER TABLE song_profiles ADD COLUMN tags TEXT");
+    // Profiles looked up before titles were cleaned sit under raw-title keys
+    // the lookup no longer reaches, and kept no tags to reread: drop them so
+    // the backfill looks those songs up again by their real title.
+    const stale = (
+      this.db
+        .query(
+          "SELECT key, title, artist FROM song_profiles WHERE tags IS NULL AND source != 'agent'",
+        )
+        .all() as { key: string; title: string; artist: string }[]
+    ).filter((row) => row.key !== profileKey(row.title, row.artist));
+    if (stale.length) {
+      const drop = this.db.query("DELETE FROM song_profiles WHERE key = ?");
+      this.db.transaction(() => {
+        for (const row of stale) drop.run(row.key);
+      })();
+      log.info(
+        { event: "stale_profiles_dropped", count: stale.length },
+        "Dropped profiles stored under raw titles",
+      );
+    }
     this.db.run(`
       CREATE TABLE IF NOT EXISTS song_outcomes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1482,16 +1502,22 @@ export class SmartRecs {
     options: { delayMs?: number; limit?: number; stop?: () => boolean } = {},
   ) {
     if (!this.config.lastFmApiKey) return 0;
-    const songs = this.db
+    // Profiles are keyed by the cleaned song, so which songs lack one is
+    // decided here, not by matching raw titles in SQL.
+    const rows = this.db
       .query(
-        `SELECT o.title, o.artist, COUNT(*) AS plays FROM song_outcomes o
-          LEFT JOIN song_profiles p
-            ON p.key = lower(o.artist) || char(0) || lower(o.title)
-          WHERE p.key IS NULL
-          GROUP BY lower(o.artist), lower(o.title)
+        `SELECT title, artist, COUNT(*) AS plays FROM song_outcomes
+          GROUP BY lower(artist), lower(title)
           ORDER BY plays DESC LIMIT ?`,
       )
       .all(options.limit ?? 2000) as { title: string; artist: string }[];
+    const seen = new Set<string>();
+    const songs = rows.filter((song) => {
+      const key = profileKey(song.title, song.artist);
+      if (seen.has(key) || this.profile(song.title, song.artist)) return false;
+      seen.add(key);
+      return true;
+    });
     let filled = 0;
     for (const song of songs) {
       if (options.stop?.()) break;
@@ -1500,7 +1526,12 @@ export class SmartRecs {
       await Bun.sleep(options.delayMs ?? 1500);
     }
     log.info(
-      { event: "profiles_backfilled", tried: songs.length, filled },
+      {
+        event: "profiles_backfilled",
+        songs: rows.length,
+        tried: songs.length,
+        filled,
+      },
       "Backfilled song profiles",
     );
     return filled;

@@ -669,3 +669,45 @@ test("imported outcomes are replayed with what was known that day, so evaluation
   // Day one knows nothing yet; from day two the removals weigh metal down.
   expect((evaluation as any).summary.separation).toBeGreaterThan(0.75);
 });
+
+test("songs profiled under a raw video title are looked up again by their real title", async () => {
+  const db = new Database(":memory:");
+  const first = new SmartRecs(db, {}, offline);
+  // A profile saved before titles were cleaned: raw key, no tags.
+  db.query(
+    `INSERT INTO song_profiles (key, title, artist, genres, moods, source, confidence, updated_at)
+     VALUES (?, ?, 'Band A', '["classical"]', '[]', 'lastfm', 0.7, 1)`,
+  ).run(
+    "band a\u0000band a - songbird (official video)",
+    "Band A - Songbird (Official Video)",
+  );
+  first.recordOutcome(
+    {
+      title: "Band A - Songbird (Official Video)",
+      artist: "Band A",
+      addedBy: "UALICE",
+      outcome: "finished",
+    },
+    { sessionId: "s", listeners: ["UALICE"], recent: [], hour: 10 },
+  );
+  const looked: string[] = [];
+  const request = (async (url: string) => {
+    if (url.includes("track.getTopTags")) {
+      looked.push(new URL(url).searchParams.get("track")!);
+      return Response.json({
+        toptags: {
+          tag: [
+            { name: "smooth jazz", count: 9 },
+            { name: "saxophone", count: 4 },
+            { name: "jazz", count: 3 },
+          ],
+        },
+      });
+    }
+    return Response.json({ error: 6 });
+  }) as unknown as typeof fetch;
+  const second = new SmartRecs(db, { lastFmApiKey: "key" }, request);
+  expect(await second.backfillProfiles({ delayMs: 0 })).toBe(1);
+  expect(looked).toEqual(["Songbird"]);
+  expect(second.profile("Songbird", "Band A")?.genres).toEqual(["jazz"]);
+});
