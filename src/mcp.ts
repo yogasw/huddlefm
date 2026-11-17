@@ -182,8 +182,24 @@ export const mcpTools = [
     ["query"],
   ),
   tool(
+    "similar",
+    "Songs like one song (YouTube Music's up next for it), each with a link for add. The song is matched by title and artist, so a namesake is never used. For 'songs related to X': add X if asked, add these, then settings autoplay true and autoplayMode related so more like it follow",
+    "similar",
+    {
+      title: { type: "string" },
+      artist: { type: "string" },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 30,
+        description: "How many songs; default 10",
+      },
+    },
+    ["title", "artist"],
+  ),
+  tool(
     "add",
-    "Add a song by a reference from search, or a link",
+    "Add a song by a reference from search, or a link; a song already playing or queued is refused",
     "add",
     {
       reference: { type: "string" },
@@ -729,6 +745,8 @@ async function call(
   };
   if (typeof args.query === "string") command.query = args.query;
   if (typeof args.reference === "string") command.reference = args.reference;
+  if (typeof args.title === "string") command.title = args.title;
+  if (typeof args.artist === "string") command.artist = args.artist;
   // Agents write the ID as a mention or lowercase as often as bare.
   const requestedBy = slackUserId(args.requested_by);
   if (requestedBy) command.requestedBy = requestedBy;
