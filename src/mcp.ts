@@ -136,6 +136,14 @@ const sessionSettings = {
   Record<keyof IntegrationCommand, "boolean" | readonly string[]>
 >;
 
+// Skips and removals teach recommendations what someone does not want, so
+// they count against whoever asked for them.
+const skipRequester = {
+  type: "string",
+  description:
+    "Slack user ID of who asked for it; leave it out when you do it on your own, and it counts against nobody's taste",
+};
+
 export const mcpTools = [
   tool("status", "What is playing, the queue and settings", "status"),
   tool(
@@ -222,12 +230,15 @@ export const mcpTools = [
         minItems: 1,
         description: "Queue song ids from status to take out",
       },
+      requested_by: skipRequester,
     },
     ["track_ids"],
   ),
   tool("shuffle", "Shuffle the queue", "shuffle"),
   tool("clear", "Remove every song from the queue", "clear"),
-  tool("skip", "Skip to the next song", "skip"),
+  tool("skip", "Skip to the next song", "skip", {
+    requested_by: skipRequester,
+  }),
   tool("previous", "Go back to the previous song", "previous"),
   tool("pause", "Pause playback", "pause"),
   tool("resume", "Resume playback", "resume"),
@@ -750,6 +761,7 @@ async function call(
         type: "remove",
         channel: target,
         trackId,
+        ...(requestedBy ? { requestedBy } : {}),
       })) as { ok?: boolean; removed?: unknown; error?: unknown };
       if (outcome.ok) removed.push(outcome.removed ?? { trackId });
       else failed.push({ trackId, error: outcome.error });

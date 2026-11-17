@@ -509,10 +509,37 @@ test("imports past outcomes from the audit log once, and counts likes", () => {
       origin: "autoplay",
       playedSeconds: 12,
     }),
+    // An agent's skip for nobody is not imported; one for a person is
+    // theirs, not the MCP user's.
+    line({
+      time: "2026-11-01T10:07:00.000Z",
+      event: "track.skipped",
+      actor: { id: "U01MCP" },
+      creditedTo: "agent",
+      sessionId: "old",
+      trackId: "t4",
+      title: "Tidy",
+      artist: "Fourth",
+      requesterId: "UALICE",
+      origin: "manual",
+      playedSeconds: 5,
+    }),
+    line({
+      time: "2026-11-01T10:08:00.000Z",
+      event: "track.removed",
+      actor: { id: "U01MCP" },
+      creditedTo: "UCAROL",
+      sessionId: "old",
+      trackId: "t5",
+      title: "Asked",
+      artist: "Fifth",
+      requesterId: "UALICE",
+      origin: "manual",
+    }),
     "not json",
   ].join("\n");
   expect(smart.importAudit(audit, () => ["UALICE", "UBOB"])).toEqual({
-    imported: 3,
+    imported: 4,
     skipped: false,
   });
   expect(smart.importAudit(audit, () => [])).toEqual({
@@ -530,6 +557,7 @@ test("imports past outcomes from the audit log once, and counts likes", () => {
         item.queuedSeconds ?? null,
       ]),
   ).toEqual([
+    ["Asked", "removed", "UALICE", "UCAROL", null],
     ["Auto", "skipped", "autoplay", "UBOB", null],
     ["Pick", "removed", "agent", "UBOB", 30],
     ["Mine", "finished", "UALICE", null, null],

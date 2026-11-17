@@ -1455,11 +1455,14 @@ export class SmartRecs {
                 ? "removed"
                 : undefined;
         if (!outcome) continue;
+        // An agent's skip or removal counts against whom it was done for.
         const actor =
-          event.actor?.id && event.actor.id !== "system"
-            ? String(event.actor.id)
-            : undefined;
-        if (outcome !== "finished" && !actor) continue;
+          typeof event.creditedTo === "string"
+            ? event.creditedTo
+            : event.actor?.id && event.actor.id !== "system"
+              ? String(event.actor.id)
+              : undefined;
+        if (outcome !== "finished" && (!actor || actor === "agent")) continue;
         const sessionId = String(event.sessionId ?? "");
         if (!listeners.has(sessionId))
           listeners.set(sessionId, sessionId ? participants(sessionId) : []);
