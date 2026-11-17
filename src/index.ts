@@ -214,6 +214,7 @@ const userSettings = new UserSettings({
   scrobbling,
   ...(jellyfin ? { jellyfin } : {}),
   recommendations,
+  smart,
   audit,
   log: logger.child({ component: "user-settings" }),
   // A session the user is in hears of it at once, as its own Settings would.
