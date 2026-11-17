@@ -35,6 +35,7 @@ export const integrationCommandTypes = [
   "history",
   "recommend",
   "search",
+  "similar",
   "add",
   "remove",
   "move",
@@ -66,6 +67,9 @@ export type IntegrationCommand = {
   permissions?: string[];
   events?: string[];
   query?: string;
+  // A song by its title and artist, as similar takes its seed.
+  title?: string;
+  artist?: string;
   // How many recent events history returns.
   limit?: number;
   reference?: string;

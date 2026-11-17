@@ -1,4 +1,4 @@
-import type { SmartRecs } from "./smart.ts";
+import { profileKey, type SmartRecs } from "./smart.ts";
 import { isTasteInteraction, tasteAction, tasteBlocks } from "./taste-ui.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { capture as captureAnalytics } from "./analytics.ts";
@@ -1659,6 +1659,71 @@ export class Coordinator {
     }
   }
 
+  // The playing or queued entry that is this song: the same source, or the
+  // same title by the same artist from another source.
+  private alreadyLinedUp(track: TrackMetadata) {
+    const key = profileKey(track.title, track.artist);
+    return [this.current, ...this.queue].find(
+      (entry): entry is Entry =>
+        !!entry &&
+        (entry.sourceId === track.sourceId ||
+          profileKey(entry.title, entry.artist) === key),
+    );
+  }
+
+  /**
+   * Songs like one song, from YouTube Music's up next for it. The song is
+   * found by its title and artist, and only taken when the artist matches,
+   * so a namesake is never the seed. Songs already playing or queued, and
+   * repeats, are left out; each comes with a link for add.
+   */
+  async agentSimilar(
+    userId: string,
+    title: string,
+    artist: string,
+    limit = 10,
+  ) {
+    if (!this.canUsePlayer(userId))
+      return {
+        ok: false as const,
+        error: "Join the huddle before using the player.",
+      };
+    try {
+      const seed = await this.tracks.searchSong(title, artist);
+      if (!seed)
+        return {
+          ok: false as const,
+          error: `Could not find ${title} by ${artist}; check the spelling or search for it.`,
+        };
+      const seen = new Set([profileKey(seed.title, seed.artist)]);
+      const songs = (await this.tracks.upNextTracks(seed.sourceId))
+        .filter((track) => {
+          const key = profileKey(track.title, track.artist);
+          if (seen.has(key) || this.alreadyLinedUp(track)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, Math.max(1, Math.min(30, limit)))
+        .map((track) => ({
+          title: track.title,
+          artist: track.artist,
+          link: track.canonicalUrl,
+        }));
+      return {
+        ok: true as const,
+        seed: {
+          title: seed.title,
+          artist: seed.artist,
+          link: seed.canonicalUrl,
+        },
+        songs,
+        note: "Add the seed first if it was asked for, then these with add. To keep playing songs like it after they run out, turn autoplay on with autoplayMode related.",
+      };
+    } catch (error) {
+      return { ok: false as const, error: message(error) };
+    }
+  }
+
   async agentAdd(
     userId: string,
     reference: string,
@@ -1668,6 +1733,8 @@ export class Coordinator {
       withVideoMode?: boolean;
       // Who the songs are credited to, when not `userId`.
       requesterId?: string;
+      // Refuse a single song that is already playing or queued.
+      refuseQueued?: boolean;
     } = {},
   ) {
     throwIfAborted(signal);
@@ -1716,6 +1783,15 @@ export class Coordinator {
       }
     }
     throwIfAborted(signal);
+    if (options.refuseQueued && !Array.isArray(selection)) {
+      const lined = this.alreadyLinedUp(selection);
+      if (lined)
+        return {
+          ok: false as const,
+          error: `${lined.title} by ${lined.artist} is already ${lined === this.current ? "playing" : "in the queue"}.`,
+          alreadyQueued: true,
+        };
+    }
     const tracks = Array.isArray(selection) ? selection : [selection];
     const needed = Array.isArray(selection) ? "add-bulk" : "add";
     if (!this.can(userId, needed))
@@ -4067,11 +4143,25 @@ export class Coordinator {
         if (!command.query)
           return { ok: false as const, error: "query is required." };
         return this.agentSearch(userId, command.query);
+      case "similar":
+        if (!command.title || !command.artist)
+          return {
+            ok: false as const,
+            error: "title and artist are required.",
+          };
+        return this.agentSimilar(
+          userId,
+          command.title,
+          command.artist,
+          command.limit,
+        );
       case "add":
         if (!command.reference)
           return { ok: false as const, error: "reference is required." };
         return this.agentAdd(userId, command.reference, undefined, {
           awaitPreparation: Boolean(options.mcp),
+          // An agent adding a song already lined up is a slip, not a wish.
+          refuseQueued: Boolean(options.mcp),
           // An agent's song for nobody in particular reads as a
           // recommendation rather than as the MCP user's.
           ...(command.requestedBy

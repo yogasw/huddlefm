@@ -10442,3 +10442,63 @@ test("recommend ranks the catalog's songs for the listeners and learns from remo
   ).toMatchObject([{ outcome: "removed", actor: "UGUEST" }]);
   await test.coordinator.endFromSlack();
 });
+
+test("similar seeds from the right artist and leaves out what is lined up", async () => {
+  const song = (title: string, artist: string, id: string) => ({
+    sourceInput: `https://music.youtube.com/watch?v=${id}`,
+    canonicalUrl: `https://music.youtube.com/watch?v=${id}`,
+    sourceId: id,
+    title,
+    artist,
+  });
+  const asked: string[][] = [];
+  const test = setup({
+    searchSong: async (title: string, artist: string) => {
+      asked.push([title, artist]);
+      return artist === "Band A"
+        ? song(title, artist, "seed0000000")
+        : undefined;
+    },
+    upNextTracks: async () => [
+      song("Seed", "Band A", "seed0000000"),
+      song("Now", "Band", "now00000000"),
+      song("Next", "Band B", "next0000000"),
+      song("Next", "Band B", "next0000001"),
+      song("Other", "Band C", "other000000"),
+    ],
+    resolveUrl: async (input: string) =>
+      song("Now", "Band", input.split("v=").at(-1)!),
+    prepare: async () => "track.opus",
+  } as unknown as TrackCatalog);
+  await test.coordinator.start();
+  Reflect.set(test.coordinator, "current", {
+    id: "now",
+    requesterId: "host",
+    sourceId: "now00000000",
+    title: "Now",
+    artist: "Band",
+    status: "ready",
+  });
+  const found = (await test.coordinator.mcpCommand("host", {
+    type: "similar",
+    title: "Seed",
+    artist: "Band A",
+    limit: 5,
+  })) as Record<string, any>;
+  expect(found.ok).toBe(true);
+  expect(found.seed.title).toBe("Seed");
+  expect(found.songs.map((item: any) => item.title)).toEqual(["Next", "Other"]);
+  const missing = (await test.coordinator.mcpCommand("host", {
+    type: "similar",
+    title: "Seed",
+    artist: "Somebody Else",
+  })) as Record<string, any>;
+  expect(missing.ok).toBe(false);
+  // Through MCP, a song already playing is refused rather than added twice.
+  const again = (await test.coordinator.mcpCommand("host", {
+    type: "add",
+    reference: "https://music.youtube.com/watch?v=now00000000",
+  })) as Record<string, any>;
+  expect(again).toMatchObject({ ok: false, alreadyQueued: true });
+  await test.coordinator.endFromSlack();
+});
