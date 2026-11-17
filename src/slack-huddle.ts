@@ -529,6 +529,21 @@ export class SlackHuddleAdapter {
     return result.ok === true;
   }
 
+  // Invites a user unless already there; true when the user was added now.
+  async addToChannel(channelId: string, userId: string) {
+    const result = await this.api(
+      "conversations.invite",
+      { channel: channelId, users: userId },
+      ["already_in_channel"],
+    );
+    if (result.ok === true)
+      log.info(
+        { event: "channel_member_added", channelId, userId },
+        "Added a member to a channel",
+      );
+    return result.ok === true;
+  }
+
   async removeFromChannel(channelId: string, userId: string) {
     await this.api(
       "conversations.kick",

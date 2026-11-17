@@ -18,6 +18,10 @@ const host = (change: Partial<McpHost> = {}): McpHost => ({
           },
         }
       : undefined,
+  check: async (channel) =>
+    channel === "C01ALLOWED"
+      ? { ok: true, added: [] }
+      : { ok: false, reason: "bot_invite_refused", error: "Add it first." },
   join: async (channel, threadTs, userId) => {
     joined.push({ channel, threadTs, userId });
     return { ok: true, joined: true };
@@ -114,6 +118,15 @@ test("joins a Huddle only with its thread and who asked", async () => {
   expect(joined).toEqual([
     { channel: "C01ALLOWED", threadTs: "1.0", userId: "U1" },
   ]);
+});
+
+test("checks a channel by its id alone", async () => {
+  expect((await call("check", {})).isError).toBe(true);
+  expect(await call("check", { channel: "C01ALLOWED" })).toEqual({
+    isError: false,
+    value: { ok: true, added: [] },
+  });
+  expect((await call("check", { channel: "C01OTHER" })).isError).toBe(true);
 });
 
 test("changes only the settings it is given, dropping unknown modes", async () => {
