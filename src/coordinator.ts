@@ -1,4 +1,5 @@
 import type { SmartRecs } from "./smart.ts";
+import { isTasteInteraction, tasteAction, tasteBlocks } from "./taste-ui.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { capture as captureAnalytics } from "./analytics.ts";
 import type { AuditLog } from "./audit-log.ts";
@@ -1272,6 +1273,9 @@ export class Coordinator {
     // session's queue of actions rather than in it.
     if (this.jellyfinUi?.handles(interaction))
       return this.jellyfinUi.action(interaction);
+    // Your taste is the user's own, so anyone may change theirs.
+    if (this.smart && isTasteInteraction(interaction))
+      return this.tasteInteraction(interaction, this.smart);
     if (interaction.actionId === "bulk_add_to_queue")
       return this.bulkAddLinks(interaction);
     if (interaction.actionId === "continue_last_queue")
@@ -5694,6 +5698,23 @@ export class Coordinator {
       // A song that cannot be played now is passed over before it is shown.
       if ((await this.tracks.playable?.(metadata).catch(() => true)) === false)
         continue;
+      // Nor is one a listener said they want none of.
+      const avoided = await this.smart
+        ?.avoidedBy(this.listenerIds(), metadata)
+        .catch(() => undefined);
+      if (avoided) {
+        this.log.info(
+          {
+            event: "autoplay_candidate_avoided",
+            sourceId: metadata.sourceId,
+            userId: avoided.userId,
+            kind: avoided.kind,
+            value: avoided.value,
+          },
+          "Passed over an autoplay song a listener avoids",
+        );
+        continue;
+      }
       const pending = await this.enqueue(async () => {
         if (!this.canAddAutoplay(context, generation)) return;
         const currentIds = new Set([
@@ -7966,6 +7987,23 @@ export class Coordinator {
       settings,
       ...defined({ notice }),
       ...yourData(this.store, userId),
+      ...(this.smart
+        ? { tasteBlocks: tasteBlocks(this.id, this.smart.tasteSummary(userId)) }
+        : {}),
+    });
+  }
+
+  private async tasteInteraction(interaction: Interaction, smart: SmartRecs) {
+    const settings = this.settingsMetadata(interaction);
+    await tasteAction(interaction, {
+      smart,
+      slack: this.slack,
+      audit: (event, userId, fields) =>
+        this.audit.record(event, userId, { sessionId: this.id, ...fields }),
+      sessionId: this.id,
+      settings,
+      yourDataView: (notice) =>
+        this.yourDataView(interaction.userId, settings, notice),
     });
   }
 
@@ -7983,7 +8021,10 @@ export class Coordinator {
   private async deleteYourData(interaction: Interaction, kind: UserDataKind) {
     const { userId } = interaction;
     const { count, notice } = await deleteUserData(
-      { store: this.store, ...defined({ jellyfinUi: this.jellyfinUi }) },
+      {
+        store: this.store,
+        ...defined({ jellyfinUi: this.jellyfinUi, smart: this.smart }),
+      },
       userId,
       kind,
       interaction.value,

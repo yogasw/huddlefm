@@ -1,3 +1,5 @@
+import type { SmartRecs } from "./smart.ts";
+import { isTasteInteraction, tasteAction, tasteBlocks } from "./taste-ui.ts";
 import type { AuditLog } from "./audit-log.ts";
 import {
   actions,
@@ -115,6 +117,7 @@ export async function deleteUserData(
   services: {
     store: Store;
     jellyfinUi?: Pick<JellyfinUi, "forget">;
+    smart?: Pick<SmartRecs, "forgetTaste">;
   },
   userId: string,
   kind: UserDataKind,
@@ -134,6 +137,7 @@ export async function deleteUserData(
   if (kind === "all") {
     await services.jellyfinUi?.forget(userId);
     store.forgetUser(userId);
+    services.smart?.forgetTaste(userId, "all");
     return {
       count: 0,
       notice:
@@ -258,6 +262,7 @@ export class UserSettings {
       scrobbling?: ScrobbleDispatcher;
       jellyfin?: Jellyfin;
       recommendations?: Pick<RecommendationCatalog, "refreshUser">;
+      smart?: SmartRecs;
       audit: AuditLog;
       log: typeof logger;
       /** The sessions the user may be in while changing these. */
@@ -313,6 +318,20 @@ export class UserSettings {
   async action(interaction: Interaction) {
     if (this.jellyfinUi?.handles(interaction))
       return this.jellyfinUi.action(interaction);
+    const { smart } = this.services;
+    if (smart && isTasteInteraction(interaction)) {
+      const settings = this.metadata(interaction);
+      return tasteAction(interaction, {
+        smart,
+        slack: this.services.slack,
+        audit: (event, userId, fields) =>
+          this.services.audit.record(event, userId, fields),
+        sessionId: personalSettingsId,
+        settings,
+        yourDataView: (notice) =>
+          this.yourDataView(interaction.userId, settings, notice),
+      });
+    }
     if (interaction.type === "view_closed") return;
     if (interaction.type === "view_submission") {
       if (interaction.actionId === "listenbrainz_token")
@@ -595,6 +614,14 @@ export class UserSettings {
       settings,
       ...(notice ? { notice } : {}),
       ...yourData(this.services.store, userId),
+      ...(this.services.smart
+        ? {
+            tasteBlocks: tasteBlocks(
+              personalSettingsId,
+              this.services.smart.tasteSummary(userId),
+            ),
+          }
+        : {}),
     });
   }
 
@@ -610,7 +637,11 @@ export class UserSettings {
     const { store, audit, recommendations, scrobbling, slack } = this.services;
     const { userId } = interaction;
     const { count, notice } = await deleteUserData(
-      { store, ...(this.jellyfinUi ? { jellyfinUi: this.jellyfinUi } : {}) },
+      {
+        store,
+        ...(this.jellyfinUi ? { jellyfinUi: this.jellyfinUi } : {}),
+        ...(this.services.smart ? { smart: this.services.smart } : {}),
+      },
       userId,
       kind,
       interaction.value,

@@ -47,6 +47,9 @@ export type McpHost = {
     | "deleteVocabulary"
     | "resetVocabulary"
     | "vocabularyLog"
+    | "setTaste"
+    | "tasteSummary"
+    | "forgetTaste"
   >;
   // Makes a channel ready for music, inviting who is missing, or says in
   // one line what someone has to do.
@@ -275,6 +278,23 @@ const songProperties = {
   artist: { type: "string" },
 };
 
+const tasteUser = {
+  type: "string",
+  description:
+    "Slack user ID of the person whose taste it is; only ever the person who asked",
+};
+const words = { type: "array", items: { type: "string" } };
+const tasteLists = {
+  type: "object",
+  properties: {
+    genres: words,
+    moods: words,
+    countries: { ...words, description: "ISO 3166 alpha-2 or a name" },
+    artists: words,
+  },
+  additionalProperties: false,
+};
+
 // Tools about songs and strategies rather than one Huddle: no thread needed.
 // Genre and mood lists come from the vocabulary, so they grow with it.
 export const smartTools = (
@@ -416,6 +436,60 @@ export const smartTools = (
     },
   },
   {
+    name: "taste_get",
+    description:
+      "One person's taste: what they said they like or avoid, what has been learnt from what they played and skipped, and how much history it rests on",
+    inputSchema: {
+      type: "object",
+      properties: { user: tasteUser },
+      required: ["user"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "taste_set",
+    description:
+      "Keep what a person said about their own taste, only for the person who said it. avoid: never picked by recommend or autoplay while they listen (a song someone asks for still plays); like: weighs strongly for them. Genres, moods and countries are matched to the vocabulary ('korea' is KR, 'kpop' is k-pop); words that fit nothing come back in unknown. replace=true sets the whole list, as Your taste does.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user: tasteUser,
+        like: tasteLists,
+        avoid: tasteLists,
+        unset: {
+          ...tasteLists,
+          description: "Values to drop, liked or avoided",
+        },
+        replace: { type: "boolean" },
+      },
+      required: ["user"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "taste_forget",
+    description:
+      "Forget a person's taste when they ask: what they said (said), what was learnt from their plays and skips (history), or both (all); with songs, only those songs' history",
+    inputSchema: {
+      type: "object",
+      properties: {
+        user: tasteUser,
+        what: { type: "string", enum: ["said", "history", "all"] },
+        songs: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: songProperties,
+            required: ["title", "artist"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["user", "what"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "outcomes",
     description:
       "What became of past songs across sessions (played out, skipped, removed), to learn which picks work; added_by=agent for your own picks",
@@ -531,6 +605,55 @@ async function callSmart(
     case "vocabulary_reset": {
       const outcome = smart.resetVocabulary(args.kind, args.value, by);
       return text(outcome, !outcome.ok);
+    }
+    case "taste_get": {
+      const user = slackUserId(args.user);
+      if (!user) return text({ error: "user is required" }, true);
+      return text({ ok: true, user, ...smart.tasteSummary(user) });
+    }
+    case "taste_set": {
+      const user = slackUserId(args.user);
+      if (!user) return text({ error: "user is required" }, true);
+      const lists = (value: unknown) =>
+        value && typeof value === "object"
+          ? (value as Record<string, unknown>)
+          : undefined;
+      const outcome = smart.setTaste(user, {
+        ...(lists(args.like) ? { like: lists(args.like) } : {}),
+        ...(lists(args.avoid) ? { avoid: lists(args.avoid) } : {}),
+        ...(lists(args.unset) ? { unset: lists(args.unset) } : {}),
+        ...(args.replace === true ? { replace: true } : {}),
+      } as Parameters<typeof smart.setTaste>[1]);
+      return text({
+        ok: true,
+        user,
+        said: outcome.rules,
+        ...(outcome.unknown.length
+          ? {
+              unknown: outcome.unknown,
+              note: "These fit no genre, mood or country; check vocabulary_get",
+            }
+          : {}),
+      });
+    }
+    case "taste_forget": {
+      const user = slackUserId(args.user);
+      const what = args.what;
+      if (!user || (what !== "said" && what !== "history" && what !== "all"))
+        return text({ error: "user and what are required" }, true);
+      const songs = Array.isArray(args.songs)
+        ? args.songs.filter(
+            (song): song is { title: string; artist: string } =>
+              !!song &&
+              typeof song.title === "string" &&
+              typeof song.artist === "string",
+          )
+        : undefined;
+      return text({
+        ok: true,
+        user,
+        forgotten: smart.forgetTaste(user, what, songs),
+      });
     }
     case "profile_get": {
       const profile = smart.profile(str(args.title), str(args.artist));

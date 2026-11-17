@@ -5,6 +5,14 @@ import {
   type QuickJSWASMModule,
 } from "quickjs-emscripten";
 import { logger } from "./logger.ts";
+import {
+  TasteRules,
+  resolveLists,
+  tasteKinds,
+  type TasteChange,
+  type TasteKind,
+  type TasteRuleSet,
+} from "./taste-rules.ts";
 
 // Smart recommendations: what a song is (its profile), what became of the
 // songs a session played (outcomes), and how candidates are weighed (a
@@ -531,6 +539,8 @@ type Lookup = (
 ) => Promise<Record<string, any> | undefined>;
 
 export class SmartRecs {
+  // What each person said outright they want more or none of.
+  readonly rules: TasteRules;
   private inflight = new Map<string, Promise<SongProfile | undefined>>();
   private misses = new Map<string, number>();
   private listenerInsert!: ReturnType<Database["query"]>;
@@ -550,6 +560,7 @@ export class SmartRecs {
   ) {
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
+    this.rules = new TasteRules(db, () => this.now());
     this.db.run(`
       CREATE TABLE IF NOT EXISTS song_profiles (
         key TEXT PRIMARY KEY,
@@ -1241,6 +1252,26 @@ export class SmartRecs {
         taste.countries[profile.country] =
           (taste.countries[profile.country] ?? 0) + 1;
     }
+    // Said outright, it outweighs what playing has suggested so far.
+    if (before === undefined) {
+      const rules = this.rules.get(userId);
+      for (const [stance, weight] of [
+        ["like", ruleWeight],
+        ["avoid", -ruleWeight],
+      ] as const)
+        for (const kind of tasteKinds)
+          for (const value of rules[stance][kind]) {
+            taste.evidence++;
+            const record =
+              kind === "artists"
+                ? taste.artists
+                : kind === "countries"
+                  ? taste.countries
+                  : taste[kind];
+            const key = kind === "artists" ? normalize(value) : value;
+            record[key] = (record[key] ?? 0) + weight;
+          }
+    }
     if (energyWeight) taste.energy = energySum / energyWeight;
     return taste;
   }
@@ -1549,6 +1580,162 @@ export class SmartRecs {
       "Backfilled song profiles",
     );
     return filled;
+  }
+
+  // Said taste --------------------------------------------------------------
+
+  /** The vocabulary a person's words are matched against. */
+  tasteVocabulary() {
+    const vocabulary = this.vocabulary();
+    return {
+      genres: vocabulary.genres,
+      moods: vocabulary.moods,
+      countries: vocabulary.places,
+    };
+  }
+
+  /**
+   * Changes what a person said they like or avoid. Words are matched to the
+   * vocabulary ("korea" is KR); what fits nothing is returned, not kept.
+   */
+  setTaste(userId: string, change: TasteChange) {
+    const vocabulary = this.tasteVocabulary();
+    const unknown: string[] = [];
+    const resolve = (lists: TasteChange["like"]) => {
+      const resolved = resolveLists(lists, vocabulary);
+      unknown.push(...resolved.unknown);
+      return resolved.lists;
+    };
+    const rules = this.rules.set(userId, {
+      like: resolve(change.like),
+      avoid: resolve(change.avoid),
+      // Unset words are matched too, but one that fits nothing is dropped
+      // as written.
+      unset: (() => {
+        const resolved = resolveLists(change.unset, vocabulary);
+        const lists = resolved.lists;
+        for (const item of resolved.unknown) {
+          const [kind, ...rest] = item.split(": ");
+          lists[kind as TasteKind].push(rest.join(": "));
+        }
+        return lists;
+      })(),
+      ...(change.replace ? { replace: true } : {}),
+    });
+    this.tastes.delete(userId);
+    return { rules, unknown };
+  }
+
+  /** What is kept about a person's taste, said and learnt. */
+  tasteSummary(userId: string) {
+    const taste = this.taste(userId);
+    const top = (record: Record<string, number>, sign: 1 | -1) =>
+      Object.entries(record)
+        .filter(([, value]) => value * sign > 0)
+        .sort((a, b) => (b[1] - a[1]) * sign)
+        .slice(0, 5)
+        .map(([key]) => key);
+    const history = this.db
+      .query(
+        `SELECT COUNT(*) AS n FROM song_outcomes
+          WHERE added_by = ?1 OR actor = ?1
+             OR id IN (SELECT outcome_id FROM song_outcome_listeners WHERE user_id = ?1)`,
+      )
+      .get(userId) as { n: number };
+    return {
+      said: this.rules.get(userId) as TasteRuleSet,
+      learnt: {
+        likes: {
+          genres: top(taste.genres, 1),
+          moods: top(taste.moods, 1),
+          countries: top(taste.countries, 1),
+          artists: top(taste.artists, 1),
+        },
+        avoids: {
+          genres: top(taste.genres, -1),
+          moods: top(taste.moods, -1),
+          countries: top(taste.countries, -1),
+          artists: top(taste.artists, -1),
+        },
+      },
+      history: history.n,
+    };
+  }
+
+  /**
+   * Forgets what is kept about a person's taste: what they said, the
+   * outcomes of songs they added, skipped, removed or heard, or both. With
+   * songs, only those songs' outcomes go.
+   */
+  forgetTaste(
+    userId: string,
+    what: "said" | "history" | "all",
+    songs?: { title: string; artist: string }[],
+  ) {
+    let said = 0;
+    let history = 0;
+    this.db.transaction(() => {
+      if (what !== "history" && !songs?.length) said = this.rules.clear(userId);
+      if (what === "said") return;
+      const keys = songs?.length
+        ? new Set(songs.map((song) => profileKey(song.title, song.artist)))
+        : undefined;
+      const rows = (
+        this.db
+          .query(
+            `SELECT id, title, artist, added_by, actor FROM song_outcomes
+              WHERE added_by = ?1 OR actor = ?1
+                 OR id IN (SELECT outcome_id FROM song_outcome_listeners WHERE user_id = ?1)`,
+          )
+          .all(userId) as {
+          id: number;
+          title: string;
+          artist: string;
+          added_by: string;
+          actor: string | null;
+        }[]
+      ).filter((row) => !keys || keys.has(profileKey(row.title, row.artist)));
+      const unlisten = this.db.query(
+        "DELETE FROM song_outcome_listeners WHERE user_id = ? AND outcome_id = ?",
+      );
+      const anonymize = this.db.query(
+        `UPDATE song_outcomes SET
+           added_by = CASE WHEN added_by = ?1 THEN 'forgotten' ELSE added_by END,
+           actor = CASE WHEN actor = ?1 THEN 'forgotten' ELSE actor END
+         WHERE id = ?2`,
+      );
+      for (const row of rows) {
+        unlisten.run(userId, row.id);
+        // The row stays, without them, so strategies still learn from how
+        // the song went for the room.
+        anonymize.run(userId, row.id);
+        history++;
+      }
+    })();
+    this.tastes.delete(userId);
+    return { said, history };
+  }
+
+  /**
+   * Which listener said they want none of a song, if any, looking its
+   * profile up when it is not known yet but never waiting long for it.
+   */
+  async avoidedBy(
+    listeners: string[],
+    song: { title: string; artist: string },
+    waitMs = 3_000,
+  ) {
+    if (!listeners.some((id) => this.rules.count(id))) return undefined;
+    const profile =
+      this.profile(song.title, song.artist) ??
+      (await Promise.race([
+        this.ensureProfile(song.title, song.artist),
+        Bun.sleep(waitMs).then(() => undefined),
+      ]));
+    return this.rules.avoiders(listeners, {
+      artist: cleanSong(song.title, song.artist).artist,
+      ...(profile ? { profile } : {}),
+    })[0];
   }
 
   // Outcomes ----------------------------------------------------------------
@@ -2051,6 +2238,29 @@ export class SmartRecs {
       ].map((id) => [id, this.taste(id)] as const),
     );
     const mood = this.sessionMood(context.recent);
+    // A song a listener said they want none of is not picked while they are
+    // here; the agent hears which were held back and for whom.
+    const heldBack: {
+      title: string;
+      artist: string;
+      by: string;
+      because: string;
+    }[] = [];
+    candidates = candidates.filter((candidate) => {
+      const profile = this.profile(candidate.title, candidate.artist);
+      const [hit] = this.rules.avoiders(context.listeners, {
+        artist: cleanSong(candidate.title, candidate.artist).artist,
+        ...(profile ? { profile } : {}),
+      });
+      if (hit)
+        heldBack.push({
+          title: candidate.title,
+          artist: candidate.artist,
+          by: hit.userId,
+          because: `${singular[hit.kind]} ${hit.value}`,
+        });
+      return !hit;
+    });
     const scored = candidates.map((candidate) => {
       const features = this.features(
         { ...candidate, of: candidates.length },
@@ -2207,7 +2417,9 @@ export class SmartRecs {
       listeners: context.listeners.map((id) => ({
         id,
         ...summarize(tastes.get(id)!),
+        said: this.rules.get(id),
       })),
+      ...(heldBack.length ? { heldBack } : {}),
       picks: picked.map((item) => ({
         title: item.candidate.title,
         artist: item.candidate.artist,
@@ -2324,3 +2536,13 @@ function rowStrategy(row: Record<string, any>): Strategy {
     ...(row.result ? { result: row.result } : {}),
   };
 }
+
+// How much a said like or avoid weighs against one played-out song (1).
+const ruleWeight = 5;
+
+const singular: Record<TasteKind, string> = {
+  genres: "genre",
+  moods: "mood",
+  countries: "country",
+  artists: "artist",
+};

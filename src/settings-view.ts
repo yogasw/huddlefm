@@ -1367,6 +1367,8 @@ export type YourDataOptions = {
   channelSaves: (ChannelSaveView & { channelId: string })[];
   // Jellyfin servers the user linked.
   jellyfinServers?: { name: string; host: string; linkedAt: number }[];
+  // Your taste, built by taste-ui.ts when recommendations learn tastes.
+  tasteBlocks?: unknown[];
 };
 
 /** What HuddleFM keeps about the user, each kind with a way to delete it. */
@@ -1484,6 +1486,7 @@ export function yourDataView(options: YourDataOptions) {
             }
           : {}),
       },
+      ...(options.tasteBlocks ?? []),
       ...when(
         options.jellyfinServers?.length,
         { type: "header", text: plain("Jellyfin") },
