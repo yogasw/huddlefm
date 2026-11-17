@@ -48,6 +48,9 @@ export type McpHost = {
     | "resetVocabulary"
     | "vocabularyLog"
   >;
+  // Makes a channel ready for music, inviting who is missing, or says in
+  // one line what someone has to do.
+  check(channel: string): Promise<{ ok: boolean; [key: string]: unknown }>;
   // Brings HuddleFM into the active Huddle of a thread, hosted by userId.
   join(
     channel: string,
@@ -102,6 +105,19 @@ const joinTool = {
       },
     },
     required: ["channel", "thread_ts", "user"],
+    additionalProperties: false,
+  },
+};
+
+// Checking is the channel's alone: no Huddle needs to be on.
+const checkTool = {
+  name: "check",
+  description:
+    "Get a channel ready for music: adds who is missing and says in one line what someone has to do when that is not possible; join checks too",
+  inputSchema: {
+    type: "object",
+    properties: { channel },
+    required: ["channel"],
     additionalProperties: false,
   },
 };
@@ -633,6 +649,7 @@ async function answer(rpc: Rpc, host: McpHost) {
     case "tools/list":
       return result(rpc.id, {
         tools: [
+          checkTool,
           joinTool,
           ...mcpTools.map(({ type: _type, ...rest }) => rest),
           ...(host.smart ? smartTools(host.smart.vocabulary()) : []),
@@ -652,6 +669,11 @@ async function call(
   const args = params.arguments ?? {};
   const target = typeof args.channel === "string" ? args.channel : "";
   const threadTs = typeof args.thread_ts === "string" ? args.thread_ts : "";
+  if (params.name === checkTool.name) {
+    if (!target) return text({ error: "channel is required" }, true);
+    const outcome = await host.check(target);
+    return text(outcome, !outcome.ok);
+  }
   if (params.name === joinTool.name) {
     const user = typeof args.user === "string" ? args.user : "";
     if (!target || !threadTs || !user)

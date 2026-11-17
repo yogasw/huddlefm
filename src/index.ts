@@ -18,6 +18,7 @@ import {
   useStandardEmoji,
 } from "./coordinator-ui.ts";
 import { safeError } from "./error-message.ts";
+import { ChannelChecker } from "./channel-check.ts";
 import { fileResponse } from "./file-response.ts";
 import { controlDenied } from "./local-control.ts";
 import { flushLogs, logger } from "./logger.ts";
@@ -253,6 +254,45 @@ let mentionUserId = "";
 // Slack through the signed-in account but join the Huddle, and that
 // account's owner can listen in on another device and use the player.
 const sessionBotId = () => (config.xoxb ? mentionUserId : botUserId);
+// In bot mode, makes sure the bot user and the signed-in account are in a
+// channel before music plays there; see channel-check.ts.
+const channelChecker = new ChannelChecker(
+  {
+    accountAccess: (channelId) => slackHuddle.ensureChannelAccess(channelId),
+    invite: (channelId, userId) => slackHuddle.addToChannel(channelId, userId),
+    names: async () => {
+      const [bot, account] = await Promise.all([
+        slackApp.displayName(mentionUserId),
+        slackApp.displayName(botUserId),
+      ]);
+      return { bot, account };
+    },
+  },
+  () => (config.xoxb ? mentionUserId || undefined : undefined),
+);
+
+// Channels set to always use a controls channel never need the bot user in
+// the channel itself.
+const checkChannel = (channelId: string, fresh = false) =>
+  config.forcedCompanionChannelIds.has(channelId)
+    ? Promise.resolve({ ok: true as const, added: [] as string[] })
+    : channelChecker.check(channelId, fresh);
+
+// The thread's active Huddle, read once more when the user is not listed in
+// it yet, as Slack can list a Huddle's participants a moment late.
+async function huddleWithUser(
+  channelId: string,
+  threadTs: string,
+  userId: string,
+) {
+  let room = await slackHuddle.activeHuddleRoom(channelId, threadTs);
+  if (room && !huddleHasParticipant(room, userId)) {
+    await Bun.sleep(participantRecheckMs);
+    room = (await slackHuddle.activeHuddleRoom(channelId, threadTs)) ?? room;
+  }
+  return room;
+}
+const participantRecheckMs = 2_000;
 let companions: CompanionChannels;
 let restoreTimer: ReturnType<typeof setInterval> | undefined;
 let canvasTimer: ReturnType<typeof setInterval> | undefined;
@@ -1408,9 +1448,23 @@ async function joinMentionedHuddle(
 ) {
   const notify = (text: string) =>
     slackApp.ephemeral(event.channelId, event.userId, text, event.threadTs);
-  const room = await slackHuddle.activeHuddleRoom(
+  const checked = await checkChannel(event.channelId, true);
+  if (!checked.ok) {
+    log.info(
+      {
+        event: "mention_join_channel_not_ready",
+        channelId: event.channelId,
+        reason: checked.reason,
+      },
+      "Huddle join refused because the channel is not ready",
+    );
+    await notify(checked.error);
+    return false;
+  }
+  const room = await huddleWithUser(
     event.channelId,
     event.threadTs,
+    event.userId,
   );
   if (!room) {
     await notify("This isn’t an active Huddle thread.");
@@ -1543,8 +1597,13 @@ const server = Bun.serve({
               }
             : undefined;
         },
+        async check(channel) {
+          return checkChannel(channel, true);
+        },
         async join(channel, threadTs, userId) {
-          const room = await slackHuddle.activeHuddleRoom(channel, threadTs);
+          const checked = await checkChannel(channel);
+          if (!checked.ok) return checked;
+          const room = await huddleWithUser(channel, threadTs, userId);
           if (!room)
             return { ok: false, error: "No active Huddle in that thread" };
           if (joiningCalls.has(room.callId) || runtimeForCall(room.callId))
@@ -1552,7 +1611,7 @@ const server = Bun.serve({
           if (!huddleHasParticipant(room, userId))
             return { ok: false, error: "That user is not in the Huddle" };
           await joinHuddle(channel, userId, room.callId);
-          return { ok: true, joined: true };
+          return { ok: true, joined: true, added: checked.added };
         },
       });
     },
