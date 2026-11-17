@@ -1855,7 +1855,14 @@ export class Coordinator {
     }
   }
 
-  async agentRemove(userId: string, trackId: string, signal?: AbortSignal) {
+  // creditTo is who the removal counts against when learning tastes, when
+  // that is not userId: the person an agent acted for, or "agent".
+  async agentRemove(
+    userId: string,
+    trackId: string,
+    signal?: AbortSignal,
+    creditTo?: string,
+  ) {
     return this.enqueue(async () => {
       throwIfAborted(signal);
       if (!this.canUsePlayer(userId))
@@ -1871,7 +1878,7 @@ export class Coordinator {
           ok: false as const,
           error: "You do not have permission for that.",
         };
-      await this.removeEntry(userId, entry);
+      await this.removeEntry(userId, entry, undefined, creditTo);
       return {
         ok: true as const,
         removed: { title: entry.title, artist: entry.artist },
@@ -2042,13 +2049,13 @@ export class Coordinator {
     });
   }
 
-  async agentSkip(userId: string, signal?: AbortSignal) {
+  async agentSkip(userId: string, signal?: AbortSignal, creditTo?: string) {
     return this.enqueue(async () => {
       throwIfAborted(signal);
       if (!this.can(userId, "skip")) return this.denied(userId);
       if (!this.current)
         return { ok: false as const, error: "Nothing is playing." };
-      const skipped = await this.skipCurrent(userId);
+      const skipped = await this.skipCurrent(userId, creditTo);
       return {
         ok: true as const,
         skipped: { title: skipped.title, artist: skipped.artist },
@@ -4072,7 +4079,12 @@ export class Coordinator {
       case "remove":
         if (!command.trackId)
           return { ok: false as const, error: "trackId is required." };
-        return this.agentRemove(userId, command.trackId);
+        return this.agentRemove(
+          userId,
+          command.trackId,
+          undefined,
+          mcpCredit(command, options),
+        );
       case "move":
         if (command.trackIds?.length)
           return this.agentMoveMany(userId, command.trackIds, {
@@ -4091,7 +4103,7 @@ export class Coordinator {
       case "clear":
         return this.agentClear(userId);
       case "skip":
-        return this.agentSkip(userId);
+        return this.agentSkip(userId, undefined, mcpCredit(command, options));
       case "previous":
         return this.agentPrevious(userId);
       case "toggle":
@@ -4481,6 +4493,8 @@ export class Coordinator {
             ? "removed"
             : undefined;
     if (!outcome) return;
+    // An agent skipping or tidying on its own says nothing of anyone's taste.
+    if (outcome !== "finished" && item.actor === agentActor) return;
     try {
       this.smart.recordOutcome(
         {
@@ -6633,15 +6647,16 @@ export class Coordinator {
   }
 
   // Skips the playing track. Callers have checked that one is playing.
-  private async skipCurrent(userId: string) {
+  private async skipCurrent(userId: string, creditTo?: string) {
     const skipped = this.current!;
     this.audit.record("track.skipped", userId, {
       sessionId: this.id,
+      ...(creditTo ? { creditedTo: creditTo } : {}),
       ...auditTrack(skipped),
       playedSeconds: Math.round(this.playbackSeconds),
       duration: skipped.duration,
     });
-    this.notifyTrack("track.skipped", skipped, {}, userId);
+    this.notifyTrack("track.skipped", skipped, {}, creditTo ?? userId);
     this.store.incrementUsage("next");
     this.rejectSkipped(skipped, userId);
     await this.advance("skipped");
@@ -6841,6 +6856,7 @@ export class Coordinator {
     userId: string,
     entry: Entry,
     interaction?: Interaction,
+    creditTo?: string,
   ) {
     this.queue.splice(this.queue.indexOf(entry), 1);
     this.preparations.get(entry.id)?.abort();
@@ -6850,9 +6866,10 @@ export class Coordinator {
       this.rejectSkipped(entry, userId);
     this.audit.record("track.removed", userId, {
       sessionId: this.id,
+      ...(creditTo ? { creditedTo: creditTo } : {}),
       ...auditTrack(entry),
     });
-    this.notifyTrack("queue.removed", entry, {}, userId);
+    this.notifyTrack("queue.removed", entry, {}, creditTo ?? userId);
     this.store.incrementUsage("removed");
     this.queueChanged(interaction);
     await this.releaseMedia(entry);
@@ -10626,4 +10643,15 @@ export class Coordinator {
       }),
     ]);
   }
+}
+
+// Who an agent's skip or removal through MCP counts against: the person it
+// names as having asked, or else nobody, rather than the MCP user it runs as.
+export const agentActor = "agent";
+function mcpCredit(
+  command: IntegrationCommand,
+  options: { mcp?: boolean },
+): string | undefined {
+  if (!options.mcp) return undefined;
+  return command.requestedBy ?? agentActor;
 }

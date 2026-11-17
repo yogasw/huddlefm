@@ -10417,5 +10417,28 @@ test("recommend ranks the catalog's songs for the listeners and learns from remo
   expect(smart.outcomes({ addedBy: "agent" })).toMatchObject([
     { title: "Other", outcome: "removed", actor: "host" },
   ]);
+  // Through MCP a removal counts against whoever the agent names, and
+  // against nobody when it names no one.
+  const removeVia = async (requestedBy?: string) => {
+    await test.coordinator.mcpCommand("host", {
+      type: "add",
+      reference: "https://example.com/Fits",
+    });
+    const entry = (
+      Reflect.get(test.coordinator, "queue") as { id: string; title: string }[]
+    ).find((item) => item.title === "Fits")!;
+    await test.coordinator.mcpCommand("host", {
+      type: "remove",
+      trackId: entry.id,
+      ...(requestedBy ? { requestedBy } : {}),
+    });
+  };
+  await removeVia("UGUEST");
+  await removeVia();
+  expect(
+    smart
+      .outcomes({ addedBy: "agent" })
+      .filter((item) => item.title === "Fits"),
+  ).toMatchObject([{ outcome: "removed", actor: "UGUEST" }]);
   await test.coordinator.endFromSlack();
 });
