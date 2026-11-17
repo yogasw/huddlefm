@@ -36,6 +36,8 @@ Genres, moods and places live in the data volume, not the code.
   vocabulary_set kind=genre value="city pop" keys=["city pop"] energy=3,
   with a note saying why. Put specific entries before broad ones (priority).
 - A tag maps wrongly? vocabulary_set with corrected keys.
+- profile_set changes only the fields you give; the rest of the song's
+  profile stays.
 - vocabulary_delete removes an entry, vocabulary_reset restores a built-in.
 Every change is logged with who and why; keep the lists short and distinct.
 
@@ -46,13 +48,16 @@ Every change is logged with who and why; keep the lists short and distinct.
   exploreMin, exploreMax, script).
 - strategy_eval: replay past outcomes through changed weights or a script;
   separation is how often kept songs score above rejected ones (0.5 is
-  chance). Only propose a change that beats activeSeparation.
+  chance). Only propose a change that beats activeSeparation. Check it out
+  of sample: pick a rule using since/until on one stretch of dates, then
+  evaluate it on a later stretch it was not tuned on.
 - strategy_set: propose it with a note. It is tried on half your picks and
   takes over only if those are removed or skipped no more often; otherwise
   it is dropped by itself. strategy_rollback undoes a version.
 - A script is JavaScript defining function score(song, ctx) that returns
   -5..5, added to the built-in score. song: title, artist, forUsers, sources,
-  discovery, profile, features; ctx: listeners, lastRequester, hour, mood.
+  discovery, profile, features; ctx: listeners, lastRequester, hour (server
+  time, likely UTC), at (ISO time), mood.
   It runs sandboxed (no network, files or timers; 150ms).
 Review now and then (say weekly): look at outcomes, adjust the vocabulary or
 weights, evaluate, propose. Change one thing at a time.

@@ -422,10 +422,19 @@ export const smartTools = (
       type: "object",
       properties: {
         weights: { type: "object", properties: weightProperties },
+        since: {
+          type: "string",
+          description:
+            "Only outcomes from this time (ISO date or time, e.g. 2026-11-14); tune on one stretch, check on another",
+        },
+        until: {
+          type: "string",
+          description: "Only outcomes before this time (ISO date or time)",
+        },
         script: {
           type: "string",
           description:
-            "JavaScript defining function score(song, ctx) returning a number (-5..5), added to the built-in score times weights.script. song: title, artist, forUsers, sources, discovery, profile, features; ctx: listeners, lastRequester, hour, mood. Runs sandboxed: no network, files or timers, 150ms.",
+            "JavaScript defining function score(song, ctx) returning a number (-5..5), added to the built-in score times weights.script. song: title, artist, forUsers, sources, discovery, profile, features; ctx: listeners, lastRequester, hour (server time), at (ISO time), mood. Runs sandboxed: no network, files or timers, 150ms.",
         },
       },
       additionalProperties: false,
@@ -536,6 +545,8 @@ async function callSmart(
           ? { weights: args.weights as Record<string, number> }
           : {}),
         ...(typeof args.script === "string" ? { script: args.script } : {}),
+        ...(typeof args.since === "string" ? { since: args.since } : {}),
+        ...(typeof args.until === "string" ? { until: args.until } : {}),
       });
       return text(outcome, !outcome.ok);
     }

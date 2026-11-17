@@ -1061,22 +1061,33 @@ export class SmartRecs {
     const vocabulary = this.vocabulary();
     const genres = vocabulary.genres.map((entry) => entry.value);
     const moods = vocabulary.moods.map((entry) => entry.value);
-    const genresGiven = list(input.genres, genres);
-    const moodsGiven = list(input.moods, moods);
+    // Fields left out keep what the song already had, so fixing one field
+    // does not wipe the others.
+    const existing = this.profile(title, artist);
+    const genresGiven =
+      input.genres === undefined
+        ? (existing?.genres ?? [])
+        : list(input.genres, genres);
+    const moodsGiven =
+      input.moods === undefined
+        ? (existing?.moods ?? [])
+        : list(input.moods, moods);
     const code = (value: unknown, length: number) =>
       typeof value === "string" && value.trim().length === length
         ? value.trim()
         : undefined;
-    const country = code(input.country, 2)?.toUpperCase();
-    const language = code(input.language, 2)?.toLowerCase();
+    const country = code(input.country, 2)?.toUpperCase() ?? existing?.country;
+    const language =
+      code(input.language, 2)?.toLowerCase() ?? existing?.language;
     const energy =
       typeof input.energy === "number"
         ? Math.max(1, Math.min(5, Math.round(input.energy)))
-        : estimateEnergy([...genresGiven, ...moodsGiven], vocabulary);
+        : (existing?.energy ??
+          estimateEnergy([...genresGiven, ...moodsGiven], vocabulary));
     const era =
       typeof input.era === "string" && /^(19|20)\d0s$/.test(input.era)
         ? input.era
-        : undefined;
+        : existing?.era;
     if (!genresGiven.length && !moodsGiven.length && !country)
       return {
         ok: false as const,
@@ -1829,6 +1840,7 @@ export class SmartRecs {
             listeners,
             lastRequester: context.lastRequester ?? null,
             hour,
+            at: new Date(Number(row.at)).toISOString(),
             mood: mood ?? { genres: [], moods: [], countries: [] },
           },
         },
@@ -1841,10 +1853,26 @@ export class SmartRecs {
    * people kept above songs they removed or skipped (0.5 is chance), next to
    * the active strategy's figure.
    */
-  async evaluate(input: { weights?: Partial<Weights>; script?: string }) {
+  async evaluate(input: {
+    weights?: Partial<Weights>;
+    script?: string;
+    // Only outcomes in [since, until), as times or ISO dates, so a rule tuned
+    // on one stretch can be checked on another.
+    since?: number | string;
+    until?: number | string;
+  }) {
+    const time = (value: number | string | undefined, fallback: number) => {
+      if (value === undefined) return fallback;
+      const parsed = typeof value === "number" ? value : Date.parse(value);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+    const since = time(input.since, 0);
+    const until = time(input.until, Number.MAX_SAFE_INTEGER);
     const rows = this.db
-      .query("SELECT * FROM song_outcomes ORDER BY at DESC LIMIT 500")
-      .all() as Record<string, any>[];
+      .query(
+        "SELECT * FROM song_outcomes WHERE at >= ? AND at < ? ORDER BY at DESC LIMIT 500",
+      )
+      .all(since, until) as Record<string, any>[];
     const labelled = rows
       .map((row) => ({ row, kept: SmartRecs.verdict(row) }))
       .filter((item) => item.kept !== undefined);
@@ -1908,6 +1936,16 @@ export class SmartRecs {
         separation: round(proposedFigure),
         activeSeparation: round(currentFigure),
         activeVersion: active.version,
+        ...(rows.length
+          ? {
+              from: new Date(
+                Math.min(...rows.map((row) => Number(row.at))),
+              ).toISOString(),
+              to: new Date(
+                Math.max(...rows.map((row) => Number(row.at))),
+              ).toISOString(),
+            }
+          : {}),
         ...(labelled.length < 20
           ? { warning: "Few outcomes yet; the figures will move a lot." }
           : {}),
@@ -2044,6 +2082,7 @@ export class SmartRecs {
               listeners: context.listeners,
               lastRequester: context.lastRequester ?? null,
               hour: context.hour,
+              at: new Date(this.now()).toISOString(),
               mood,
             },
           })),
@@ -2218,6 +2257,7 @@ async function smokeTest(script: string) {
           listeners: ["U01EXAMPLE"],
           lastRequester: null,
           hour: 12,
+          at: "2026-01-01T12:00:00.000Z",
           mood: { genres: ["pop"], moods: ["chill"], countries: [] },
         },
       },

@@ -711,3 +711,85 @@ test("songs profiled under a raw video title are looked up again by their real t
   expect(looked).toEqual(["Songbird"]);
   expect(second.profile("Songbird", "Band A")?.genres).toEqual(["jazz"]);
 });
+
+test("evaluation can be limited to a stretch of dates, and scripts see when", async () => {
+  const smart = new SmartRecs(new Database(":memory:"), {}, offline);
+  const events: string[] = [];
+  for (let day = 1; day <= 6; day++) {
+    const base = {
+      sessionId: `s${day}`,
+      requesterId: "recommended",
+      origin: "manual",
+      title: `Song ${day}`,
+      artist: "Band",
+    };
+    events.push(
+      JSON.stringify({
+        ...base,
+        time: `2026-11-0${day}T13:00:00.000Z`,
+        event: "track.added",
+        actor: { id: "U01MCP" },
+        trackId: `a${day}`,
+      }),
+      JSON.stringify({
+        ...base,
+        time: `2026-11-0${day}T13:01:00.000Z`,
+        event: "track.removed",
+        actor: { id: "UBOB" },
+        trackId: `a${day}`,
+      }),
+      JSON.stringify({
+        ...base,
+        title: `Kept ${day}`,
+        time: `2026-11-0${day}T03:00:00.000Z`,
+        event: "track.finished",
+        actor: { id: "system" },
+        trackId: `k${day}`,
+      }),
+    );
+  }
+  smart.importAudit(events.join("\n"), () => ["UBOB"]);
+  const late = await smart.evaluate({
+    since: "2026-11-04",
+    script:
+      "function score(song, ctx) { return Number(ctx.at.slice(11, 13)) >= 12 ? -1 : 0; }",
+  });
+  expect(late).toMatchObject({
+    ok: true,
+    summary: {
+      outcomes: 6,
+      rejected: 3,
+      separation: 1,
+      from: "2026-11-04T03:00:00.000Z",
+    },
+  });
+  expect(await smart.evaluate({ until: "2026-11-02" })).toMatchObject({
+    summary: { outcomes: 2 },
+  });
+});
+
+test("profile_set keeps the fields it was not given", () => {
+  const smart = new SmartRecs(new Database(":memory:"), {}, offline);
+  smart.setProfile({
+    title: "Song",
+    artist: "Band",
+    genres: ["jazz", "classical"],
+    moods: ["chill", "focus"],
+    energy: 2,
+    country: "US",
+  });
+  expect(
+    smart.setProfile({ title: "Song", artist: "Band", genres: ["jazz"] }),
+  ).toMatchObject({
+    ok: true,
+    profile: {
+      genres: ["jazz"],
+      moods: ["chill", "focus"],
+      energy: 2,
+      country: "US",
+    },
+  });
+  expect(
+    smart.setProfile({ title: "Song", artist: "Band", moods: [] }).profile,
+  ).toMatchObject({ genres: ["jazz"], moods: [] });
+});
