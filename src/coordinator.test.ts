@@ -2279,6 +2279,10 @@ test("the bot leaving on its own keeps the rest of the queue for the channel", a
   expect(saves).toHaveLength(1);
   expect(saves[0]!.name).toBe("Left unfinished");
   expect(saves[0]!.tracks.map((track) => track.title)).toEqual(["a", "b"]);
+  expect(saves[0]!.tracks.map((track) => track.requesterId)).toEqual([
+    "host",
+    "host",
+  ]);
 });
 
 test("someone ending the session, or an empty queue, keeps nothing", async () => {
@@ -2320,6 +2324,7 @@ test("the next session offers to continue where the last one left off", async ()
         sourceId: "a",
         title: "a",
         artist: "Artist",
+        requesterId: "listener",
       },
       {
         sourceInput: "https://example.com/b",
@@ -2360,6 +2365,16 @@ test("the next session offers to continue where the last one left off", async ()
   );
   // It is picked up once, not offered again.
   expect(store.sessionSaves([{ type: "channel", id: "channel" }])).toEqual([]);
+  // Each song stays with whoever added it; one with no name goes to whoever
+  // continued the queue.
+  const entries = [
+    Reflect.get(result.coordinator, "current"),
+    ...(Reflect.get(result.coordinator, "queue") as unknown[]),
+  ].filter(Boolean) as { title: string; requesterId: string }[];
+  expect(entries.map((entry) => [entry.title, entry.requesterId])).toEqual([
+    ["a", "listener"],
+    ["b", "host"],
+  ]);
   await result.coordinator.endFromSlack();
 });
 
@@ -8988,6 +9003,46 @@ test("opening the end dialog without the end permission says so", async () => {
     "You do not have permission to end this session.",
   );
   expect(Reflect.get(result.coordinator, "state")).not.toBe("ended");
+  await result.coordinator.endFromSlack();
+});
+
+test("a saved session someone made goes to whoever loads it", async () => {
+  const store = new Store(":memory:");
+  store.addSessionSave(
+    { type: "channel", id: "channel" },
+    "Friday mix",
+    "listener",
+    [
+      {
+        sourceInput: "https://example.com/a",
+        canonicalUrl: "https://example.com/a",
+        sourceId: "a",
+        title: "a",
+        artist: "Artist",
+        requesterId: "listener",
+      },
+    ],
+    {},
+  );
+  const result = setup(
+    queueTracks,
+    unfinishedTimeouts,
+    undefined,
+    undefined,
+    store,
+  );
+  await result.coordinator.start();
+  const save = store.sessionSaves([{ type: "channel", id: "channel" }])[0]!;
+  const staged = Reflect.apply(
+    Reflect.get(result.coordinator, "stageSaved"),
+    result.coordinator,
+    ["host", save, save.tracks],
+  ) as { entry: { requesterId: string } }[];
+  expect(staged.map(({ entry }) => entry.requesterId)).toEqual(["host"]);
+  for (const { controller } of staged as unknown as {
+    controller: AbortController;
+  }[])
+    controller.abort();
   await result.coordinator.endFromSlack();
 });
 
