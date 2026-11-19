@@ -696,7 +696,9 @@ function savedTrack(track: Row) {
 }
 
 // A saved song. Who asked for it is left out: loading credits whoever loads.
-export type SessionSaveTrack = TrackMetadata;
+// `requesterId` is who added the song, kept so that the queue a session left
+// unfinished comes back under their names rather than whoever continues it.
+export type SessionSaveTrack = TrackMetadata & { requesterId?: string };
 
 // Whoever a saved queue belongs to: a channel, for anyone in its Huddles, or
 // one user's account.
@@ -790,6 +792,7 @@ function sessionSaveTrack(value: unknown): SessionSaveTrack | undefined {
     return;
   const album = text("album");
   const artwork = text("artwork");
+  const requesterId = text("requesterId");
   const duration =
     typeof track.duration === "number" &&
     Number.isFinite(track.duration) &&
@@ -810,6 +813,7 @@ function sessionSaveTrack(value: unknown): SessionSaveTrack | undefined {
       : {}),
     // A saved live stream plays live again, rather than being downloaded.
     ...(track.live === true ? { live: true } : {}),
+    ...(requesterId ? { requesterId } : {}),
   };
 }
 

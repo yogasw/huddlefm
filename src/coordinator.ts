@@ -9015,7 +9015,8 @@ export class Coordinator {
 
   // The songs a saved session keeps: the one playing and those still to
   // come. Autoplay picks are left out, since the next session picks its own.
-  private savableQueue(): SessionSaveTrack[] {
+  // Who added each is kept only for the queue the bot keeps when it leaves.
+  private savableQueue(withRequesters = false): SessionSaveTrack[] {
     return [this.current, ...this.queue].flatMap((entry) =>
       entry && !entry.automatic
         ? [
@@ -9031,6 +9032,7 @@ export class Coordinator {
                 artwork: entry.artwork,
                 kind: entry.kind,
                 live: entry.live,
+                requesterId: withRequesters ? entry.requesterId : undefined,
               }),
             },
           ]
@@ -9069,8 +9071,13 @@ export class Coordinator {
 
   // Says whether the session was saved. A failure is logged rather than
   // thrown, so that it cannot keep the session from ending.
-  private saveSession(userId: string, owner: SessionSaveOwner, name: string) {
-    const tracks = this.savableQueue();
+  private saveSession(
+    userId: string,
+    owner: SessionSaveOwner,
+    name: string,
+    withRequesters = false,
+  ) {
+    const tracks = this.savableQueue(withRequesters);
     try {
       this.store.addSessionSave(
         owner,
@@ -9317,13 +9324,35 @@ export class Coordinator {
     } as Interaction);
   }
 
+  // A saved session's songs go to whoever loads it, except the queue the bot
+  // kept when it left: those songs go back to whoever added each, in order.
+  private stageSaved(
+    userId: string,
+    save: SessionSave,
+    items: SessionSaveTrack[],
+  ) {
+    const keepCredit =
+      save.name === unfinishedSaveName &&
+      save.owner.type === "channel" &&
+      save.savedBy === this.botUserId;
+    const runs: { userId: string; items: QueuedItem[] }[] = [];
+    for (const { requesterId, ...item } of items) {
+      const owner = (keepCredit && requesterId) || userId;
+      const last = runs.at(-1);
+      if (last?.userId === owner) last.items.push(item);
+      else runs.push({ userId: owner, items: [item] });
+    }
+    return runs.flatMap((run) => this.stageEntries(run.userId, run.items));
+  }
+
   private unfinishedSave() {
     return this.store
       .sessionSaves([{ type: "channel", id: this.roomId }])
       .find((save) => save.name === unfinishedSaveName && save.tracks.length);
   }
 
-  // Queues a saved session's songs, credited to whoever loads it, and
+  // Queues a saved session's songs, credited to whoever loads it (or, for
+  // the queue a session left unfinished, to whoever first added each), and
   // applies the settings they may change. Like other additions, the songs
   // are staged in the action queue and prepared outside it, since preparing
   // waits on that queue.
@@ -9379,7 +9408,7 @@ export class Coordinator {
           duckingMode: settings.duckingMode,
           anchorEnabled: settings.anchorEnabled,
         });
-      const pending = this.stageEntries(userId, fit.items);
+      const pending = this.stageSaved(userId, save, fit.items);
       if (pending.length) void this.recommendations?.refreshUser(userId);
       const forget = checked(interaction.state.forget?.enabled);
       const mayDelete = this.canDeleteSave(userId, save);
@@ -10619,6 +10648,7 @@ export class Coordinator {
         this.botUserId,
         { type: "channel", id: this.roomId },
         unfinishedSaveName,
+        true,
       );
     this.state = "ended";
     this.playbackScrobbling?.finish();
