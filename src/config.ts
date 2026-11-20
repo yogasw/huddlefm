@@ -170,6 +170,19 @@ export function loadConfig() {
       100,
     ),
     duckHoldMs: parseWholeNumber(process.env.DUCKING_HOLD_MS, 1_000, 0, 60_000),
+    // How fast the music drops under talk and comes back after the hold.
+    duckAttackMs: parseWholeNumber(
+      process.env.DUCKING_ATTACK_MS,
+      120,
+      0,
+      10_000,
+    ),
+    duckReleaseMs: parseWholeNumber(
+      process.env.DUCKING_RELEASE_MS,
+      700,
+      0,
+      10_000,
+    ),
     lyricsOffsetMs: parseWholeNumber(
       process.env.LYRICS_OFFSET_MS,
       0,

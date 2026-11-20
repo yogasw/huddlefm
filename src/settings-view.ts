@@ -33,7 +33,9 @@ import {
 } from "./native-media/video-format.ts";
 import {
   anchorQuietChoices,
+  duckAttackChoices,
   duckHoldChoices,
+  duckReleaseChoices,
   duckPercentChoices,
   huddleMixSources,
   queueLowChoices,
@@ -932,7 +934,13 @@ type EveryChannelView = {
   anchor: boolean;
   anchorQuietMinutes: number;
   // Auto-duck: the music's loudness under talk per mode, and the hold.
-  duck?: { gentle: number; strong: number; holdMs: number };
+  duck?: {
+    gentle: number;
+    strong: number;
+    holdMs: number;
+    attackMs?: number;
+    releaseMs?: number;
+  };
   everyoneHost: boolean;
   queueMessages: ReturnType<typeof queueMessageSettings>;
 };
@@ -1012,6 +1020,11 @@ function holdLabel(ms: number) {
   return `${ms / 1_000} second${ms === 1_000 ? "" : "s"}`;
 }
 
+function rampLabel(ms: number) {
+  if (ms === 0) return "Instantly";
+  return ms < 1_000 ? `${ms} ms` : holdLabel(ms);
+}
+
 function duckBlocks(duck: NonNullable<EveryChannelView["duck"]>) {
   const select = (
     blockId: string,
@@ -1063,6 +1076,22 @@ function duckBlocks(duck: NonNullable<EveryChannelView["duck"]>) {
       withCurrent(duckHoldChoices, duck.holdMs),
       duck.holdMs,
       holdLabel,
+    ),
+    select(
+      "every_channel_duck_attack",
+      "Music drops when someone talks over",
+      "duckAttack",
+      withCurrent(duckAttackChoices, duck.attackMs ?? 120),
+      duck.attackMs ?? 120,
+      rampLabel,
+    ),
+    select(
+      "every_channel_duck_release",
+      "Music fades back in over",
+      "duckRelease",
+      withCurrent(duckReleaseChoices, duck.releaseMs ?? 700),
+      duck.releaseMs ?? 700,
+      rampLabel,
     ),
     context(
       "every_channel_duck_hint",

@@ -24,7 +24,9 @@ import {
   permissionPresets,
   everyChannel,
   anchorQuietChoices,
+  duckAttackChoices,
   duckHoldChoices,
+  duckReleaseChoices,
   duckPercentChoices,
   queueLowChoices,
   queueMessageSettings,
@@ -655,6 +657,8 @@ export class Coordinator {
       duckGentlePercent?: number;
       duckStrongPercent?: number;
       duckHoldMs?: number;
+      duckAttackMs?: number;
+      duckReleaseMs?: number;
       aloneMs: number;
       // How long HuddleFM must stay alone before it warns. Presence briefly
       // drops while it restarts or reconnects, before everyone is seen again.
@@ -8865,6 +8869,18 @@ export class Coordinator {
       duckHoldChoices.includes(minutes as (typeof duckHoldChoices)[number])
     )
       saved.duckHoldMs = minutes;
+    else if (
+      setting === "duckAttack" &&
+      duckAttackChoices.includes(minutes as (typeof duckAttackChoices)[number])
+    )
+      saved.duckAttackMs = minutes;
+    else if (
+      setting === "duckRelease" &&
+      duckReleaseChoices.includes(
+        minutes as (typeof duckReleaseChoices)[number],
+      )
+    )
+      saved.duckReleaseMs = minutes;
     // Everyone as host is Everyone Is Host mode, from the session's start.
     else if (setting === "everyone") saved.communism = on;
     else return;
