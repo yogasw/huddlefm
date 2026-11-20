@@ -698,7 +698,13 @@ test("lets admins tune auto-duck for every session", () => {
           anchor: false,
           anchorQuietMinutes: 0,
           everyoneHost: false,
-          duck: { gentle: 33, strong: 15, holdMs: 1_500 },
+          duck: {
+            gentle: 33,
+            strong: 15,
+            holdMs: 1_500,
+            attackMs: 250,
+            releaseMs: 2_000,
+          },
           queueMessages: {
             low: { enabled: false, mention: false, left: 2 },
             last: { enabled: false, mention: false },
@@ -716,5 +722,11 @@ test("lets admins tune auto-duck for every session", () => {
   expect(text).toContain('"value":"duckStrong:15"');
   expect(text).toContain(
     '"initial_option":{"text":{"type":"plain_text","text":"1.5 seconds"},"value":"duckHold:1500"}',
+  );
+  expect(text).toContain(
+    '"initial_option":{"text":{"type":"plain_text","text":"250 ms"},"value":"duckAttack:250"}',
+  );
+  expect(text).toContain(
+    '"initial_option":{"text":{"type":"plain_text","text":"2 seconds"},"value":"duckRelease:2000"}',
   );
 });

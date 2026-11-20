@@ -17,7 +17,15 @@ export const duckLevels: Record<DuckingMode, number> = {
  * after the last word before coming back. Admins tune it for every session;
  * the levels above and the hold below are its defaults.
  */
-export type DuckTuning = { gentle: number; strong: number; holdMs: number };
+export type DuckTuning = {
+  gentle: number;
+  strong: number;
+  holdMs: number;
+  /** Milliseconds to drop into the duck. */
+  attackMs: number;
+  /** Milliseconds to bring the music back once the hold has elapsed. */
+  releaseMs: number;
+};
 
 /** Ducking used when nothing is stored for a session and no env var is set. */
 export const defaultDuckingMode: DuckingMode = "gentle";
@@ -39,7 +47,12 @@ export const defaultDuckTuning: DuckTuning = {
   gentle: duckLevels.gentle,
   strong: duckLevels.strong,
   holdMs: duckHoldMs,
+  attackMs: duckAttackSeconds * 1_000,
+  releaseMs: duckReleaseSeconds * 1_000,
 };
+
+/** Longest attack or release an admin or env var can choose. */
+export const duckRampMaxMs = 10_000;
 
 /**
  * The tuning a session plays with: what admins saved for every channel, in
@@ -51,18 +64,30 @@ export function duckTuningOf(
         duckGentlePercent?: number;
         duckStrongPercent?: number;
         duckHoldMs?: number;
+        duckAttackMs?: number;
+        duckReleaseMs?: number;
       }
     | undefined,
   fallback: {
     duckGentlePercent?: number;
     duckStrongPercent?: number;
     duckHoldMs?: number;
+    duckAttackMs?: number;
+    duckReleaseMs?: number;
   },
 ) {
   const percents = {
     gentle: saved?.duckGentlePercent ?? fallback.duckGentlePercent ?? 45,
     strong: saved?.duckStrongPercent ?? fallback.duckStrongPercent ?? 15,
     holdMs: saved?.duckHoldMs ?? fallback.duckHoldMs ?? duckHoldMs,
+    attackMs:
+      saved?.duckAttackMs ??
+      fallback.duckAttackMs ??
+      defaultDuckTuning.attackMs,
+    releaseMs:
+      saved?.duckReleaseMs ??
+      fallback.duckReleaseMs ??
+      defaultDuckTuning.releaseMs,
   };
   return {
     percents,
@@ -70,6 +95,8 @@ export function duckTuningOf(
       gentle: percents.gentle / 100,
       strong: percents.strong / 100,
       holdMs: percents.holdMs,
+      attackMs: percents.attackMs,
+      releaseMs: percents.releaseMs,
     } satisfies DuckTuning,
   };
 }
@@ -84,6 +111,12 @@ export function parseDuckTuning(value: unknown): DuckTuning {
       : defaultDuckTuning[field];
   };
   const hold = given.holdMs;
+  const ramp = (field: "attackMs" | "releaseMs") => {
+    const number = given[field];
+    return typeof number === "number" && number >= 0 && number <= duckRampMaxMs
+      ? number
+      : defaultDuckTuning[field];
+  };
   return {
     gentle: gain("gentle"),
     strong: gain("strong"),
@@ -91,6 +124,8 @@ export function parseDuckTuning(value: unknown): DuckTuning {
       typeof hold === "number" && hold >= 0 && hold <= 60_000
         ? hold
         : defaultDuckTuning.holdMs,
+    attackMs: ramp("attackMs"),
+    releaseMs: ramp("releaseMs"),
   };
 }
 
@@ -233,8 +268,8 @@ export class DuckingController {
       this.target === previousTarget
         ? 0
         : this.target < previousTarget
-          ? duckAttackSeconds
-          : duckReleaseSeconds;
+          ? this.tuning.attackMs / 1_000
+          : this.tuning.releaseMs / 1_000;
     return {
       gain: this.target,
       rampSeconds,

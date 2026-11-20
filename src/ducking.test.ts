@@ -169,13 +169,52 @@ test("takes new levels and hold at once, and keeps a tuning in range", () => {
   ducking.volume("guest", 0.5, false, 0);
   expect(ducking.gain).toBe(duckLevels.gentle);
   expect(
-    ducking.setTuning({ gentle: 0.2, strong: 0.05, holdMs: 3_000 }, 10)?.gain,
+    ducking.setTuning(
+      {
+        gentle: 0.2,
+        strong: 0.05,
+        holdMs: 3_000,
+        attackMs: 120,
+        releaseMs: 700,
+      },
+      10,
+    )?.gain,
   ).toBe(0.2);
   expect(ducking.volume("guest", 0, null, 20)?.recheckMs).toBe(3_000);
   expect(ducking.tick(20 + 3_000)?.gain).toBe(1);
-  expect(parseDuckTuning({ gentle: 2, strong: 0.1, holdMs: -1 })).toEqual({
+  expect(
+    parseDuckTuning({
+      gentle: 2,
+      strong: 0.1,
+      holdMs: -1,
+      attackMs: 50,
+      releaseMs: 99_999,
+    }),
+  ).toEqual({
     gentle: duckLevels.gentle,
     strong: 0.1,
     holdMs: duckHoldMs,
+    attackMs: 50,
+    releaseMs: duckReleaseSeconds * 1_000,
   });
+});
+
+test("drops and comes back over the tuned attack and release", () => {
+  const ducking = new DuckingController("gentle");
+  ducking.setTuning(
+    {
+      gentle: 0.4,
+      strong: 0.1,
+      holdMs: 500,
+      attackMs: 0,
+      releaseMs: 2_000,
+    },
+    0,
+  );
+  expect(ducking.volume("guest", 0.5, false, 0)).toEqual({
+    gain: 0.4,
+    rampSeconds: 0,
+  });
+  ducking.volume("guest", 0, null, 10);
+  expect(ducking.tick(10 + 500)).toEqual({ gain: 1, rampSeconds: 2 });
 });

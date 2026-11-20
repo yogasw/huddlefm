@@ -96,6 +96,8 @@ captureAnalytics("app.started", {
     duckGentlePercent: config.duckGentlePercent,
     duckStrongPercent: config.duckStrongPercent,
     duckHoldMs: config.duckHoldMs,
+    duckAttackMs: config.duckAttackMs,
+    duckReleaseMs: config.duckReleaseMs,
     lyricsOffsetMs: config.lyricsOffsetMs,
     loudnessNormalization: config.loudnessNormalization,
     trackPreparationConcurrency: config.preparationConcurrency,

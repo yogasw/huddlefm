@@ -96,6 +96,10 @@ export type ChannelDefaults = {
   duckGentlePercent?: number;
   duckStrongPercent?: number;
   duckHoldMs?: number;
+  // How fast the music drops when someone starts talking and comes back
+  // after the hold, in milliseconds.
+  duckAttackMs?: number;
+  duckReleaseMs?: number;
   anchorEnabled?: boolean;
   // Minutes the thread must stay quiet before the player moves down to its
   // bottom; unset or 0 moves it right away.
@@ -202,6 +206,10 @@ export const duckPercentChoices = [
 export const duckHoldChoices = [
   500, 1_000, 1_500, 2_000, 3_000, 5_000,
 ] as const;
+export const duckAttackChoices = [0, 50, 120, 250, 500, 1_000] as const;
+export const duckReleaseChoices = [
+  0, 300, 700, 1_000, 1_500, 2_000, 3_000, 5_000,
+] as const;
 
 // Keeps only the fields that still hold a valid value, so a row saved by an
 // older or newer version cannot put a session into an unknown state.
@@ -239,6 +247,15 @@ export function parseChannelDefaults(
     (saved.duckHoldMs as number) <= 60_000
   )
     defaults.duckHoldMs = saved.duckHoldMs as number;
+  for (const field of ["duckAttackMs", "duckReleaseMs"] as const) {
+    const value = saved[field];
+    if (
+      Number.isInteger(value) &&
+      (value as number) >= 0 &&
+      (value as number) <= 10_000
+    )
+      defaults[field] = value as number;
+  }
   if (typeof saved.anchorEnabled === "boolean")
     defaults.anchorEnabled = saved.anchorEnabled;
   if (
